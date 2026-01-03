@@ -45,6 +45,10 @@ Follow the steps below to download and place the required models correctly.
 ### **🟣 QWEN3-8B (GGUF)**
 * **[Browse GGUF files here](https://huggingface.co/SumitMathur8956/Hy-Motion1.0/tree/main/text_encoders/Qwen3-8B-GGUF)**
 
+> [!IMPORTANT]
+> To use GGUF text encoders, you must first install [ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF) from the ComfyUI Manager or manually.
+
+
 ---
 
 ## 📅 Features
