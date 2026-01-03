@@ -631,6 +631,7 @@ class HYMotionSampler:
                sampler_method: str = "dopri5", atol: float = 1e-4, rtol: float = 1e-4,
                align_ground: bool = True, ground_offset: float = 0.0,
                skip_smoothing: bool = False, body_chunk_size: int = 64):
+        print(f"[HY-Motion] DEBUG: num_samples received = {num_samples}")
         print(f"[HY-Motion] Generating {duration}s motion with {num_samples} sample(s)")
         
         # Prepare seeds
