@@ -26,7 +26,7 @@ app.registerExtension({
             const storedHeight = localStorage.getItem('hymotion_viewer_height') || defaultHeight;
 
             const container = document.createElement("div");
-            container.style.cssText = `width:100%; height:${storedHeight}px; background:#111; position:relative; display:flex; flex-direction:column; border:1px solid #333; border-radius:4px; overflow:hidden;`;
+            container.style.cssText = `width:100%; height:100%; background:#111; position:relative; display:flex; flex-direction:column; border:1px solid #333; border-radius:4px; overflow:hidden;`;
 
             const canvasContainer = document.createElement("div");
             canvasContainer.style.cssText = "flex:1; width:100%; height:100%; min-height:0; overflow:hidden; position:relative;";
@@ -34,11 +34,11 @@ app.registerExtension({
 
             // Playback controls
             const controls = document.createElement("div");
-            controls.style.cssText = "height:30px; display:flex; align-items:center; padding:0 10px; gap:10px; background:#222;";
+            controls.style.cssText = "height:40px; display:flex; align-items:center; padding:0 8px; gap:6px; background:#222; overflow:hidden; flex-shrink:0;";
 
             const playBtn = document.createElement("button");
             playBtn.innerText = "Play";
-            playBtn.style.cssText = "cursor:pointer; padding:2px 10px;";
+            playBtn.style.cssText = "cursor:pointer; padding:4px 12px; font-size:13px; font-weight:500; flex-shrink:0; white-space:nowrap;";
 
             const progress = document.createElement("input");
             progress.type = "range";
@@ -46,7 +46,9 @@ app.registerExtension({
             progress.max = 100;
             progress.step = "any";
             progress.value = 0;
-            progress.style.flex = "1";
+            progress.style.flex = "1 1 auto";
+            progress.style.minWidth = "60px"; // Minimum slider width
+            progress.style.height = "6px"; // Thicker slider
 
             let isScrubbing = false;
             progress.onmousedown = progress.ontouchstart = () => { isScrubbing = true; };
@@ -56,28 +58,28 @@ app.registerExtension({
             progress.onchange = releaseScrubbing; // Fallback
 
             const statusLabel = document.createElement("div");
-            statusLabel.style.cssText = "font-size:11px; color:#888;";
+            statusLabel.style.cssText = "font-size:12px; color:#888; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:150px;";
             statusLabel.innerText = "Ready";
 
             const cycleBtn = document.createElement("button");
             cycleBtn.innerText = "Select";
             cycleBtn.title = "Cycle through loaded models and skeletons";
-            cycleBtn.style.cssText = "cursor:pointer; padding:2px 6px; font-size:11px; background:#444; color:#fff; border:1px solid #666; border-radius:3px;";
+            cycleBtn.style.cssText = "cursor:pointer; padding:4px 8px; font-size:12px; background:#444; color:#fff; border:1px solid #666; border-radius:3px; font-weight:500; flex-shrink:0; white-space:nowrap;";
 
             const exportBtn = document.createElement("button");
             exportBtn.innerText = "Export";
             exportBtn.title = "Export or Download selection";
-            exportBtn.style.cssText = "cursor:pointer; padding:2px 6px; font-size:11px; background:#226622; color:#fff; border:1px solid #338833; border-radius:3px; display:none;";
+            exportBtn.style.cssText = "cursor:pointer; padding:4px 8px; font-size:12px; background:#226622; color:#fff; border:1px solid #338833; border-radius:3px; display:none; font-weight:500; flex-shrink:0; white-space:nowrap;";
 
             // Gizmo mode buttons (on left side)
             const gizmoGroup = document.createElement("div");
-            gizmoGroup.style.cssText = "display:flex; gap:2px; border-right:1px solid #444; padding-right:10px; margin-right:10px;";
+            gizmoGroup.style.cssText = "display:flex; gap:2px; border-right:1px solid #444; padding-right:6px; margin-right:6px; flex-shrink:0;";
 
             const createGizmoBtn = (mode, icon, tooltip) => {
                 const btn = document.createElement("button");
                 btn.innerText = icon;
                 btn.title = tooltip;
-                btn.style.cssText = "cursor:pointer; padding:2px 8px; font-size:11px; background:#333; color:#aaa; border:1px solid #555; border-radius:3px; font-weight:bold;";
+                btn.style.cssText = "cursor:pointer; padding:4px 8px; font-size:13px; background:#333; color:#aaa; border:1px solid #555; border-radius:3px; font-weight:bold; flex-shrink:0;";
                 btn.dataset.mode = mode;
                 return btn;
             };
@@ -118,16 +120,18 @@ app.registerExtension({
             resizeHandle.addEventListener('mousedown', (e) => {
                 isResizing = true;
                 startY = e.clientY;
-                startHeight = parseInt(container.style.height);
+                startHeight = node.size[1]; // Use node height instead of container
                 e.preventDefault();
             });
 
             document.addEventListener('mousemove', (e) => {
                 if (!isResizing) return;
                 const delta = e.clientY - startY;
-                const newHeight = Math.max(200, Math.min(1200, startHeight + delta)); // Min 200px, max 1200px
-                container.style.height = `${newHeight}px`;
-                localStorage.setItem('hymotion_viewer_height', newHeight);
+                const newHeight = Math.max(280, Math.min(1280, startHeight + delta)); // Min 280px (200 canvas + 80 controls), max 1280px
+
+                // Update node size to respect viewer height
+                node.size[1] = newHeight;
+                localStorage.setItem('hymotion_viewer_height', newHeight - 80);
 
                 // Force immediate renderer resize
                 requestAnimationFrame(() => {
@@ -142,6 +146,9 @@ app.registerExtension({
             document.addEventListener('mouseup', () => {
                 if (isResizing) {
                     isResizing = false;
+
+                    // Save final node size
+                    localStorage.setItem('hymotion_viewer_height', node.size[1] - 80);
 
                     // Final sync after resize complete
                     setTimeout(() => {
@@ -180,6 +187,11 @@ app.registerExtension({
             let animationFrameId = null;
             const node = this;
 
+            // Performance optimization flags
+            let needsRender = true; // Dirty flag for smart rendering
+            let isAnimating = false; // Track if animation loop should run
+            let boundingBoxCache = new Map(); // Cache for bounding boxes
+
             let raycaster = null;
             let selectedModels = []; // Array to support multi-selection
             let loadedModels = [];
@@ -212,11 +224,17 @@ app.registerExtension({
                 if (isInitialized || isInitializing) return;
                 isInitializing = true;
                 try {
+                    // Load all libraries in parallel to reduce freeze time
                     if (!window.__HY_MOTION_THREE__) {
                         console.log("[HY-Motion] Loading Three.js libs...");
-                        window.__HY_MOTION_THREE__ = await import(THREE_URL);
-                        window.__HY_MOTION_ORBIT__ = await import(ORBIT_CONTROLS_URL);
-                        window.__HY_MOTION_EXPORTER__ = await import(GLTF_EXPORTER_URL);
+                        const [three, orbit, exporter] = await Promise.all([
+                            import(THREE_URL),
+                            import(ORBIT_CONTROLS_URL),
+                            import(GLTF_EXPORTER_URL)
+                        ]);
+                        window.__HY_MOTION_THREE__ = three;
+                        window.__HY_MOTION_ORBIT__ = orbit;
+                        window.__HY_MOTION_EXPORTER__ = exporter;
                     }
                     THREE = window.__HY_MOTION_THREE__;
                     const { OrbitControls } = window.__HY_MOTION_ORBIT__;
@@ -243,12 +261,24 @@ app.registerExtension({
                         renderer.domElement.style.height = '100%';
                         renderer.domElement.style.display = 'block';
 
+                        // Store references on canvas for onResize callback access
+                        renderer.domElement.__renderer = renderer;
+                        renderer.domElement.__camera = camera;
+
                         canvasContainer.appendChild(renderer.domElement);
 
                         orbitControls = new OrbitControls(camera, renderer.domElement);
                         orbitControls.enableDamping = true;
                         orbitControls.dampingFactor = 0.05;
                         orbitControls.target.set(0, 0.8, 0);
+
+                        // Trigger rendering when user interacts with camera
+                        orbitControls.addEventListener('start', () => {
+                            startAnimating(); // Start loop when user begins interaction
+                        });
+                        orbitControls.addEventListener('change', () => {
+                            requestRender(); // Request render on camera change
+                        });
 
                         // Allow middle mouse to rotate (like Blender)
                         orbitControls.mouseButtons = {
@@ -268,6 +298,12 @@ app.registerExtension({
                         // Prevent orbit controls from interfering with gizmo
                         transformControl.addEventListener('dragging-changed', (event) => {
                             orbitControls.enabled = !event.value;
+                            if (event.value) {
+                                startAnimating(); // Start loop when dragging gizmo
+                            }
+                        });
+                        transformControl.addEventListener('change', () => {
+                            requestRender(); // Request render on gizmo change
                         });
 
                         // Gizmo mode switching function
@@ -304,26 +340,42 @@ app.registerExtension({
                         scaleBtn.onclick = () => setGizmoMode('scale');
                         gizmoOffBtn.onclick = () => setGizmoMode('none');
 
-                        // Keyboard shortcuts (Blender-style)
+                        // Keyboard shortcuts (Blender-style) - only when hovering over canvas
+                        let isHoveringCanvas = false;
+
+                        // Track mouse hover state
+                        canvasContainer.addEventListener('mouseenter', () => {
+                            isHoveringCanvas = true;
+                        });
+                        canvasContainer.addEventListener('mouseleave', () => {
+                            isHoveringCanvas = false;
+                        });
+
                         const handleKeyPress = (e) => {
+                            // Only handle shortcuts when hovering over the canvas
+                            if (!isHoveringCanvas) return;
                             if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
 
                             switch (e.key.toLowerCase()) {
                                 case 'g':
                                     setGizmoMode('translate');
                                     e.preventDefault();
+                                    e.stopPropagation();
                                     break;
                                 case 'r':
                                     setGizmoMode('rotate');
                                     e.preventDefault();
+                                    e.stopPropagation();
                                     break;
                                 case 's':
                                     setGizmoMode('scale');
                                     e.preventDefault();
+                                    e.stopPropagation();
                                     break;
                                 case 'escape':
                                     setGizmoMode('none');
                                     e.preventDefault();
+                                    e.stopPropagation();
                                     break;
                             }
                         };
@@ -354,12 +406,18 @@ app.registerExtension({
 
                         clock = new THREE.Clock();
 
+                        // Throttle resize events to prevent excessive updates
+                        let resizeTimeout;
                         const resizeObserver = new ResizeObserver(() => {
-                            if (canvasContainer.clientWidth > 0 && canvasContainer.clientHeight > 0) {
-                                camera.aspect = canvasContainer.clientWidth / canvasContainer.clientHeight;
-                                camera.updateProjectionMatrix();
-                                renderer.setSize(canvasContainer.clientWidth, canvasContainer.clientHeight, false);
-                            }
+                            clearTimeout(resizeTimeout);
+                            resizeTimeout = setTimeout(() => {
+                                if (canvasContainer.clientWidth > 0 && canvasContainer.clientHeight > 0) {
+                                    camera.aspect = canvasContainer.clientWidth / canvasContainer.clientHeight;
+                                    camera.updateProjectionMatrix();
+                                    renderer.setSize(canvasContainer.clientWidth, canvasContainer.clientHeight, false);
+                                    requestRender(); // Trigger single render after resize
+                                }
+                            }, 100); // Throttle to 100ms
                         });
                         resizeObserver.observe(canvasContainer);
 
@@ -372,7 +430,7 @@ app.registerExtension({
                     isInitializing = false;
                     while (pendingDataQueue.length > 0) handleData(pendingDataQueue.shift());
                     if (animationFrameId) cancelAnimationFrame(animationFrameId);
-                    animate();
+                    startAnimating(); // Start with initial render
                 } catch (e) {
                     console.error("[HY-Motion] Viewer Init Error:", e);
                     statusLabel.innerText = "Error: Three.js fail";
@@ -511,6 +569,8 @@ app.registerExtension({
                 }
 
                 updateUI();
+                updateSelectionHighlights(); // Update highlights immediately
+                requestRender(); // Trigger render
             };
 
             const applyHighlight = (selection) => {
@@ -723,12 +783,45 @@ app.registerExtension({
                 console.log("[HY-Motion] Multi-export sequence complete.");
             };
 
+            // Helper to start animation loop
+            const startAnimating = () => {
+                if (!isAnimating) {
+                    isAnimating = true;
+                    animate();
+                }
+            };
+
+            // Helper to stop animation loop
+            const stopAnimating = () => {
+                isAnimating = false;
+                if (animationFrameId) {
+                    cancelAnimationFrame(animationFrameId);
+                    animationFrameId = null;
+                }
+            };
+
+            // Helper to request a single render
+            const requestRender = () => {
+                needsRender = true;
+                if (!isAnimating) startAnimating();
+            };
+
             const animate = () => {
+                // Only continue loop if we should be animating
+                if (!isAnimating) {
+                    animationFrameId = null;
+                    return;
+                }
+
                 animationFrameId = requestAnimationFrame(animate);
                 if (!THREE) return; // Guard against early frames
+
                 const delta = clock ? clock.getDelta() : 0.016;
+                let shouldRender = needsRender;
 
                 if (isPlaying && maxFrames > 0 && !isScrubbing) {
+                    shouldRender = true; // Always render when playing
+
                     // Update current frame (float for sub-frame interpolation)
                     frameAccumulator += delta;
                     // Wrap accumulator to loop correctly
@@ -758,9 +851,32 @@ app.registerExtension({
                             progress.value = nextVal;
                         }
                     }
+
+                    // Update hit proxies and highlights when animating
+                    updateHitProxies();
+                    updateSelectionHighlights();
+                } else {
+                    // When not playing, only update if orbit controls have damping
+                    if (orbitControls && orbitControls.enableDamping) {
+                        shouldRender = true;
+                    } else if (!needsRender) {
+                        // Nothing to render and no damping, stop the loop
+                        stopAnimating();
+                        return;
+                    }
                 }
 
-                // Update hit proxies every frame to track animated movement
+                if (orbitControls) orbitControls.update();
+
+                // Only render if needed
+                if (shouldRender && renderer && scene && camera) {
+                    renderer.render(scene, camera);
+                    needsRender = false; // Reset dirty flag
+                }
+            };
+
+            // Separate function to update hit proxies (only when needed)
+            const updateHitProxies = () => {
                 for (const obj of loadedModels) {
                     if (!obj.hitProxy) {
                         const geo = new THREE.BoxGeometry(1, 1, 1);
@@ -776,7 +892,15 @@ app.registerExtension({
                         obj.hitProxy = proxy;
                     }
 
-                    const box = getRealtimeBox(obj.model);
+                    // Use cached box if available and not animating
+                    let box;
+                    if (!isPlaying && boundingBoxCache.has(obj)) {
+                        box = boundingBoxCache.get(obj);
+                    } else {
+                        box = getRealtimeBox(obj.model);
+                        if (!isPlaying) boundingBoxCache.set(obj, box); // Cache for static models
+                    }
+
                     if (!box.isEmpty()) {
                         const size = box.getSize(new THREE.Vector3());
                         const center = box.getCenter(new THREE.Vector3());
@@ -784,11 +908,20 @@ app.registerExtension({
                         obj.hitProxy.position.copy(center);
                     }
                 }
+            };
 
+            // Separate function to update selection highlights (only when needed)
+            const updateSelectionHighlights = () => {
                 for (const selection of selectedModels) {
                     if (selection.highlight) {
                         if (selection.type === "model") {
-                            const box = getRealtimeBox(selection.obj.model);
+                            let box;
+                            if (!isPlaying && boundingBoxCache.has(selection.obj)) {
+                                box = boundingBoxCache.get(selection.obj);
+                            } else {
+                                box = getRealtimeBox(selection.obj.model);
+                            }
+
                             if (!box.isEmpty()) {
                                 const size = box.getSize(new THREE.Vector3());
                                 const center = box.getCenter(new THREE.Vector3());
@@ -800,9 +933,6 @@ app.registerExtension({
                         }
                     }
                 }
-
-                if (orbitControls) orbitControls.update();
-                if (renderer && scene && camera) renderer.render(scene, camera);
             };
 
             const clearModels = () => {
@@ -811,6 +941,7 @@ app.registerExtension({
                 loadedModels.forEach(m => {
                     scene.remove(m.model);
                     if (m.hitProxy) scene.remove(m.hitProxy);
+                    boundingBoxCache.delete(m); // Clear cache entry
                 });
                 loadedModels = [];
                 currentModel = null;
@@ -1060,11 +1191,17 @@ app.registerExtension({
                             if (nodeData.name !== "HYMotion3DModelLoader") {
                                 isPlaying = true;
                                 playBtn.innerText = "Pause";
+                                startAnimating(); // Start animation loop
                             }
                             frameAccumulator = 0; // Reset accumulator
                         }
 
                         statusLabel.innerText = total > 1 ? `Loaded ${loadedModels.length}/${total}` : "Model Loaded";
+
+                        // Initialize hit proxies for the new model
+                        updateHitProxies();
+                        requestRender(); // Trigger render
+
                         if (total > 1) {
                             // Center on all models
                             const group = new THREE.Group();
@@ -1099,8 +1236,11 @@ app.registerExtension({
                 return String(val);
             };
 
-            const handleData = (data) => {
+            const handleData = async (data) => {
                 if (!data) return;
+
+                // Lazy init - only load Three.js when we actually have data to display
+                await ensureInitialized();
 
                 if (data.motions) {
                     const motionsStr = typeof data.motions === 'string' ? data.motions : JSON.stringify(data.motions);
@@ -1139,7 +1279,13 @@ app.registerExtension({
                 }
             };
 
-            initThree();
+            // Lazy initialization - only init when data is actually loaded
+            // This prevents the 4-second freeze on ComfyUI reload
+            const ensureInitialized = async () => {
+                if (!isInitialized && !isInitializing) {
+                    await initThree();
+                }
+            };
 
             // Support live preview on widget change for the loader nodes
             if (nodeData.name === "HYMotion3DModelLoader" || nodeData.name === "HYMotionFBXPlayer") {
@@ -1148,9 +1294,12 @@ app.registerExtension({
                     const modelWidget = this.widgets?.find(w => w.name === widgetName);
                     if (modelWidget) {
                         const oldCallback = modelWidget.callback;
-                        modelWidget.callback = function (value) {
+                        modelWidget.callback = async function (value) {
                             if (oldCallback) oldCallback.apply(this, arguments);
                             console.log("[HY-Motion] Widget changed:", value);
+
+                            // Lazy init on widget change
+                            await ensureInitialized();
 
                             let finalUrl = value;
                             if (nodeData.name === "HYMotionFBXPlayer" && value !== "none") {
@@ -1175,32 +1324,77 @@ app.registerExtension({
             }
 
             node.onExecuted = function (output) {
-                if (!isInitialized) pendingDataQueue.push(output);
-                else handleData(output);
+                // handleData is now async and handles lazy initialization
+                handleData(output);
             };
 
-            playBtn.onclick = (e) => { e.stopPropagation(); isPlaying = !isPlaying; playBtn.innerText = isPlaying ? "Pause" : "Play"; };
+            playBtn.onclick = (e) => {
+                e.stopPropagation();
+                isPlaying = !isPlaying;
+                playBtn.innerText = isPlaying ? "Pause" : "Play";
+                if (isPlaying) startAnimating(); // Start loop when playing
+            };
             cycleBtn.onclick = (e) => { e.stopPropagation(); cycleSelection(); };
             exportBtn.onclick = (e) => { e.stopPropagation(); exportSelected(); };
             progress.oninput = () => {
                 isPlaying = false; playBtn.innerText = "Play";
-                const p = progress.value / 100;
-                if (maxFrames > 0) {
-                    currentFrame = p * maxFrames;
-                    frameAccumulator = currentFrame * frameTime;
+                currentFrame = (progress.value / 100) * maxFrames;
+                frameAccumulator = currentFrame * frameTime;
 
-                    // Sync mixers immediately
-                    if (mixers.length > 0) {
-                        for (const m of mixers) {
-                            m.setTime(frameAccumulator % (maxFrames * frameTime));
-                        }
+                // Sync mixers for FBX animations
+                if (mixers.length > 0) {
+                    for (const m of mixers) {
+                        m.setTime(frameAccumulator % (maxFrames * frameTime));
                     }
-
-                    // Sync skeleton immediately
-                    updateSkeletons(currentFrame);
                 }
+
+                // Sync skeletons for motion data
+                updateSkeletons(currentFrame);
+                requestRender(); // Trigger single render
             };
             return r;
+        };
+
+        // Handle node resize to sync container and renderer
+        const onResize = nodeType.prototype.onResize;
+        nodeType.prototype.onResize = function (size) {
+            // Call original onResize if it exists
+            if (onResize) {
+                onResize.apply(this, arguments);
+            }
+
+            // Find the container widget
+            const viewerWidget = this.widgets?.find(w => w.name === "3d_viewer");
+            if (!viewerWidget || !viewerWidget.element) return;
+
+            const container = viewerWidget.element;
+            const canvasContainer = container.querySelector('div[style*="flex:1"]');
+
+            if (!container || !canvasContainer) return;
+
+            // Save the height preference for next load
+            localStorage.setItem('hymotion_viewer_height', size[1] - 80);
+
+            // Update renderer and camera if they exist
+            // Use a small delay to ensure DOM has updated
+            setTimeout(() => {
+                const THREE = window.__HY_MOTION_THREE__;
+                if (THREE && canvasContainer.clientWidth > 0 && canvasContainer.clientHeight > 0) {
+                    // Find the canvas element
+                    const canvas = canvasContainer.querySelector('canvas');
+                    if (canvas) {
+                        // Get the renderer from window storage (we'll need to store it)
+                        const renderer = canvas.__renderer;
+                        const camera = canvas.__camera;
+
+                        if (renderer && camera) {
+                            camera.aspect = canvasContainer.clientWidth / canvasContainer.clientHeight;
+                            camera.updateProjectionMatrix();
+                            renderer.setSize(canvasContainer.clientWidth, canvasContainer.clientHeight, false);
+                        }
+                    }
+                }
+            }, 0);
         };
     }
 });
