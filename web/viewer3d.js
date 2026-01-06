@@ -1,13 +1,16 @@
-const THREE_URL = "https://esm.sh/three@0.160.0";
-const FBX_LOADER_URL = "https://esm.sh/three@0.160.0/examples/jsm/loaders/FBXLoader.js";
-const ORBIT_CONTROLS_URL = "https://esm.sh/three@0.160.0/examples/jsm/controls/OrbitControls.js";
-const TRANSFORM_CONTROLS_URL = "https://esm.sh/three@0.160.0/examples/jsm/controls/TransformControls.js";
+// Local Three.js bundle paths (no CDN latency)
+const THREE_URL = "./lib/three/three.module.js";
+const FBX_LOADER_URL = "./lib/three/examples/jsm/loaders/FBXLoader.js";
+const ORBIT_CONTROLS_URL = "./lib/three/examples/jsm/controls/OrbitControls.js";
+const TRANSFORM_CONTROLS_URL = "./lib/three/examples/jsm/controls/TransformControls.js";
+const GLTF_EXPORTER_URL = "./lib/three/examples/jsm/exporters/GLTFExporter.js";
+// Note: GLTFLoader and OBJLoader will be loaded from CDN as fallback if not bundled
 const GLTF_LOADER_URL = "https://esm.sh/three@0.160.0/examples/jsm/loaders/GLTFLoader.js";
 const OBJ_LOADER_URL = "https://esm.sh/three@0.160.0/examples/jsm/loaders/OBJLoader.js";
-const GLTF_EXPORTER_URL = "https://esm.sh/three@0.160.0/examples/jsm/exporters/GLTFExporter.js";
 
 import { app } from "../../../scripts/app.js";
 import { api } from "../../../scripts/api.js";
+
 
 console.log("[HY-Motion] app imported successfully:", !!app);
 
@@ -86,7 +89,8 @@ app.registerExtension({
 
             // Playback controls
             const controls = document.createElement("div");
-            controls.style.cssText = "height:50px; display:flex; align-items:center; padding:0 10px; gap:8px; background:#222; overflow:hidden; flex-shrink:0;";
+            controls.style.cssText = "width:100%; box-sizing:border-box; height:auto; min-height:50px; display:flex; flex-wrap:wrap; align-items:center; padding:8px 10px; gap:6px; background:#222; overflow:hidden; flex-shrink:0;";
+
 
             const playBtn = document.createElement("button");
             playBtn.innerText = "Play";
@@ -640,9 +644,39 @@ app.registerExtension({
                         });
                         resizeObserver.observe(canvasContainer);
 
+                        // Initialize hit proxies and highlights whenever we are rendering to ensure consistency
                         raycaster = new THREE.Raycaster();
+
+                        // Optimized raycasting with throttling
+                        let lastRaycastTime = 0;
+                        const raycastInterval = 100; // 10fps for hover detection
+
+                        const throttledPointerMove = (event) => {
+                            const now = Date.now();
+                            if (now - lastRaycastTime < raycastInterval) return;
+                            lastRaycastTime = now;
+                            onCanvasPointerMove(event);
+                        };
+
                         canvasContainer.addEventListener('pointerdown', onCanvasPointerDown);
-                        canvasContainer.addEventListener('pointermove', onCanvasPointerMove);
+                        canvasContainer.addEventListener('pointermove', throttledPointerMove);
+
+                        // Intersection Observer to pause rendering when not visible
+                        const visibilityObserver = new IntersectionObserver((entries) => {
+                            entries.forEach(entry => {
+                                if (entry.isIntersecting) {
+                                    startAnimating();
+                                } else {
+                                    stopAnimating();
+                                }
+                            });
+                        }, { threshold: 0.1 });
+                        visibilityObserver.observe(container);
+
+                        // Store observers for cleanup
+                        this._visibilityObserver = visibilityObserver;
+                        this._resizeObserver = resizeObserver;
+                        this._handleKeyPress = handleKeyPress;
                     }
 
                     isInitialized = true;
@@ -1070,10 +1104,10 @@ app.registerExtension({
                     // Sync skeleton view with interpolation (if any)
                     updateSkeletons(currentFrame);
 
-                    // Update progress UI
-                    if (!isScrubbing) {
+                    // Update progress UI (only every ~5 frames to reduce overhead)
+                    if (!isScrubbing && Math.floor(currentFrame) % 3 === 0) {
                         const nextVal = (currentFrame / maxFrames) * 100;
-                        if (Math.abs(progress.value - nextVal) > 0.01) {
+                        if (Math.abs(progress.value - nextVal) > 0.5) {
                             progress.value = nextVal;
                         }
                     }
@@ -1086,12 +1120,13 @@ app.registerExtension({
                         stopAnimating();
                         return;
                     }
-                }
 
-                // Update hit proxies and highlights whenever we are rendering to ensure consistency
-                if (shouldRender) {
-                    updateHitProxies();
-                    updateSelectionHighlights();
+                    // Only update hit proxies and highlights when NOT playing
+                    // This saves significant CPU during animation playback
+                    if (shouldRender) {
+                        updateHitProxies();
+                        updateSelectionHighlights();
+                    }
                 }
 
                 if (orbitControls) orbitControls.update();
@@ -1103,8 +1138,50 @@ app.registerExtension({
                 }
             };
 
+
+            // Utility to properly dispose of Three.js objects
+            const disposeObject = (obj) => {
+                if (!obj) return;
+                obj.traverse((child) => {
+                    if (child.geometry) child.geometry.dispose();
+                    if (child.material) {
+                        const materials = Array.isArray(child.material) ? child.material : [child.material];
+                        materials.forEach((mat) => {
+                            if (!mat) return;
+                            // Dispose textures
+                            for (const key in mat) {
+                                if (mat[key] && mat[key].isTexture) mat[key].dispose();
+                            }
+                            mat.dispose();
+                        });
+                    }
+                });
+            };
+
+            // Cache for bounding boxes to avoid recomputing every frame
+            const bboxCache = new Map();
+
+            const getCachedBBox = (obj) => {
+                if (!bboxCache.has(obj.id)) {
+                    bboxCache.set(obj.id, {
+                        box: new THREE.Box3(),
+                        lastUpdate: 0
+                    });
+                }
+                const cache = bboxCache.get(obj.id);
+                const now = Date.now();
+
+                // Refresh cache if it's older than 100ms or hasn't been set
+                if (now - cache.lastUpdate > 100) {
+                    cache.box.copy(getRealtimeBox(obj));
+                    cache.lastUpdate = now;
+                }
+                return cache.box;
+            };
+
             // Separate function to update hit proxies (only when needed)
             const updateHitProxies = () => {
+                const now = Date.now();
                 for (const obj of loadedModels) {
                     if (!obj.hitProxy) {
                         const geo = new THREE.BoxGeometry(1, 1, 1);
@@ -1120,29 +1197,36 @@ app.registerExtension({
                         obj.hitProxy = proxy;
                     }
 
-                    const box = getRealtimeBox(obj.model);
-
-                    if (!box.isEmpty()) {
-                        const size = box.getSize(new THREE.Vector3());
-                        const center = box.getCenter(new THREE.Vector3());
-                        obj.hitProxy.scale.set(size.x * 1.3, size.y * 1.1, size.z * 1.3);
-                        obj.hitProxy.position.copy(center);
+                    // Only update at 10fps for performance
+                    if (!obj._lastProxyUpdate || now - obj._lastProxyUpdate > 100) {
+                        const box = getCachedBBox(obj.model);
+                        if (!box.isEmpty()) {
+                            const size = box.getSize(new THREE.Vector3());
+                            const center = box.getCenter(new THREE.Vector3());
+                            obj.hitProxy.scale.set(size.x * 1.3, size.y * 1.1, size.z * 1.3);
+                            obj.hitProxy.position.copy(center);
+                            obj._lastProxyUpdate = now;
+                        }
                     }
                 }
             };
 
             // Separate function to update selection highlights (only when needed)
             const updateSelectionHighlights = () => {
+                const now = Date.now();
                 for (const selection of selectedModels) {
                     if (selection.highlight) {
                         if (selection.type === "model") {
-                            const box = getRealtimeBox(selection.obj.model);
-
-                            if (!box.isEmpty()) {
-                                const size = box.getSize(new THREE.Vector3());
-                                const center = box.getCenter(new THREE.Vector3());
-                                selection.highlight.scale.set(size.x, size.y, size.z);
-                                selection.highlight.position.copy(center);
+                            // Only update at 10fps for performance
+                            if (!selection._lastHighlightUpdate || now - selection._lastHighlightUpdate > 100) {
+                                const box = getCachedBBox(selection.obj.model);
+                                if (!box.isEmpty()) {
+                                    const size = box.getSize(new THREE.Vector3());
+                                    const center = box.getCenter(new THREE.Vector3());
+                                    selection.highlight.scale.set(size.x, size.y, size.z);
+                                    selection.highlight.position.copy(center);
+                                    selection._lastHighlightUpdate = now;
+                                }
                             }
                         } else {
                             selection.highlight.update();
@@ -1156,16 +1240,24 @@ app.registerExtension({
                 mixers = [];
                 loadedModels.forEach(m => {
                     scene.remove(m.model);
-                    if (m.hitProxy) scene.remove(m.hitProxy);
+                    disposeObject(m.model); // Dispose resources
+                    if (m.hitProxy) {
+                        scene.remove(m.hitProxy);
+                        disposeObject(m.hitProxy);
+                    }
                 });
                 loadedModels = [];
                 currentModel = null;
+                bboxCache.clear(); // Clear cache when models are gone
                 deselectAll();
                 statusLabel.innerText = "Ready";
             };
 
             const clearSkeletons = () => {
-                for (const s of skeletalSamples) scene.remove(s.group);
+                for (const s of skeletalSamples) {
+                    scene.remove(s.group);
+                    disposeObject(s.group); // Dispose resources
+                }
                 skeletalSamples = [];
                 maxFrames = 0;
             };
@@ -1360,113 +1452,125 @@ app.registerExtension({
                     statusLabel.style.color = "#ffaa00";
 
                     console.log("[HY-Motion] Loading 3D Model:", fetchUrl);
+
+                    // Progress callback to show loading progress
+                    const onProgress = (xhr) => {
+                        if (xhr.lengthComputable) {
+                            const pct = Math.round((xhr.loaded / xhr.total) * 100);
+                            statusLabel.innerText = `Loading ${loadingLabel}... ${pct}%`;
+                        }
+                    };
+
                     loader.load(fetchUrl, (result) => {
-                        // Double check THREE is available in callback scope
-                        const T = THREE || window.__HY_MOTION_THREE__;
-                        if (!T) { console.error("[HY-Motion] THREE still null in callback!"); return; }
+                        // Defer processing to next frame to avoid blocking UI
+                        requestAnimationFrame(() => {
+                            // Double check THREE is available in callback scope
+                            const T = THREE || window.__HY_MOTION_THREE__;
+                            if (!T) { console.error("[HY-Motion] THREE still null in callback!"); return; }
 
-                        const fbx = (format === 'glb' || format === 'gltf') ? result.scene : result;
-                        fbx.updateMatrixWorld(true);
 
-                        const debugMat = new T.MeshStandardMaterial({ color: 0xffaa00, roughness: 0.5, metalness: 0.5, side: T.DoubleSide });
-                        fbx.traverse((child) => {
-                            if (child.isMesh) {
-                                if (!child.material || child.material.type === "MeshBasicMaterial") child.material = debugMat;
-                                child.castShadow = true;
-                                child.receiveShadow = true;
-                                child.frustumCulled = false;
-                            }
-                        });
+                            const fbx = (format === 'glb' || format === 'gltf') ? result.scene : result;
+                            fbx.updateMatrixWorld(true);
 
-                        scene.add(fbx);
-                        currentModel = fbx;
-                        loadedModels.push({
-                            model: fbx,
-                            modelPath: modelPath,
-                            name: customName || filename,
-                            fileName: filename,
-                            subfolder: subfolder,
-                            fileType: type,
-                            basePosition: { x: 0, y: 0, z: 0 },
-                            baseRotation: { x: 0, y: 0, z: 0 },
-                            baseScale: { x: 1, y: 1, z: 1 }
-                        });
+                            const debugMat = new T.MeshStandardMaterial({ color: 0xffaa00, roughness: 0.5, metalness: 0.5, side: T.DoubleSide });
+                            fbx.traverse((child) => {
+                                if (child.isMesh) {
+                                    if (!child.material || child.material.type === "MeshBasicMaterial") child.material = debugMat;
+                                    child.castShadow = true;
+                                    child.receiveShadow = true;
+                                    child.frustumCulled = false;
+                                }
+                            });
 
-                        // Positioning side-by-side
-                        if (total > 1) {
-                            fbx.position.x = index * 1.5 - (total - 1) * 0.75;
-                        }
+                            scene.add(fbx);
+                            currentModel = fbx;
+                            loadedModels.push({
+                                model: fbx,
+                                modelPath: modelPath,
+                                name: customName || filename,
+                                fileName: filename,
+                                subfolder: subfolder,
+                                fileType: type,
+                                basePosition: { x: 0, y: 0, z: 0 },
+                                baseRotation: { x: 0, y: 0, z: 0 },
+                                baseScale: { x: 1, y: 1, z: 1 }
+                            });
 
-                        const box = new THREE.Box3().setFromObject(fbx);
-                        const maxDim = Math.max(...box.getSize(new THREE.Vector3()).toArray());
-                        if (maxDim > 0) fbx.scale.setScalar(1.7 / maxDim);
-
-                        // Update base transforms to match finalized load state
-                        const obj = loadedModels.find(m => m.model === fbx);
-                        if (obj) {
-                            obj.basePosition.x = fbx.position.x;
-                            obj.basePosition.y = fbx.position.y;
-                            obj.basePosition.z = fbx.position.z;
-                            obj.baseRotation.x = fbx.rotation.x * 180 / Math.PI;
-                            obj.baseRotation.y = fbx.rotation.y * 180 / Math.PI;
-                            obj.baseRotation.z = fbx.rotation.z * 180 / Math.PI;
-                            obj.baseScale.x = fbx.scale.x;
-                            obj.baseScale.y = fbx.scale.y;
-                            obj.baseScale.z = fbx.scale.z;
-                        }
-
-                        if (fbx.animations && fbx.animations.length > 0 || (result.animations && result.animations.length > 0)) {
-                            const m = new THREE.AnimationMixer(fbx);
-                            const anims = fbx.animations || result.animations;
-                            const action = m.clipAction(anims[0]);
-                            action.play();
-                            mixers.push(m);
-
-                            // If we don't have skeletal maxFrames, use the animation duration
-                            if (maxFrames === 0) {
-                                maxFrames = Math.floor(anims[0].duration * targetFPS);
-                                if (maxFrames === 0) maxFrames = 1; // Fallback
+                            // Positioning side-by-side
+                            if (total > 1) {
+                                fbx.position.x = index * 1.5 - (total - 1) * 0.75;
                             }
 
-                            // Only auto-play if it's NOT the standalone 3D Model Loader
-                            if (nodeData.name !== "HYMotion3DModelLoader") {
-                                isPlaying = true;
-                                playBtn.innerText = "Pause";
-                                startAnimating(); // Start animation loop
+                            const box = new THREE.Box3().setFromObject(fbx);
+                            const maxDim = Math.max(...box.getSize(new THREE.Vector3()).toArray());
+                            if (maxDim > 0) fbx.scale.setScalar(1.7 / maxDim);
+
+                            // Update base transforms to match finalized load state
+                            const obj = loadedModels.find(m => m.model === fbx);
+                            if (obj) {
+                                obj.basePosition.x = fbx.position.x;
+                                obj.basePosition.y = fbx.position.y;
+                                obj.basePosition.z = fbx.position.z;
+                                obj.baseRotation.x = fbx.rotation.x * 180 / Math.PI;
+                                obj.baseRotation.y = fbx.rotation.y * 180 / Math.PI;
+                                obj.baseRotation.z = fbx.rotation.z * 180 / Math.PI;
+                                obj.baseScale.x = fbx.scale.x;
+                                obj.baseScale.y = fbx.scale.y;
+                                obj.baseScale.z = fbx.scale.z;
                             }
-                            frameAccumulator = 0; // Reset accumulator
-                        }
 
-                        statusLabel.innerText = total > 1 ? `Loaded ${loadedModels.length}/${total}` : "Model Loaded";
+                            if (fbx.animations && fbx.animations.length > 0 || (result.animations && result.animations.length > 0)) {
+                                const m = new THREE.AnimationMixer(fbx);
+                                const anims = fbx.animations || result.animations;
+                                const action = m.clipAction(anims[0]);
+                                action.play();
+                                mixers.push(m);
 
-                        // Initialize hit proxies for the new model
-                        updateHitProxies();
-                        requestRender(); // Trigger render
+                                // If we don't have skeletal maxFrames, use the animation duration
+                                if (maxFrames === 0) {
+                                    maxFrames = Math.floor(anims[0].duration * targetFPS);
+                                    if (maxFrames === 0) maxFrames = 1; // Fallback
+                                }
 
-                        if (total > 1) {
-                            // Center on all models
-                            const group = new THREE.Group();
-                            loadedModels.forEach(m => group.add(m.model.clone())); // Dummy group for centering auto-box
-                            centerCameraOnObject(group);
-                        } else {
-                            centerCameraOnObject(fbx);
-                        }
+                                // Only auto-play if it's NOT the standalone 3D Model Loader
+                                if (nodeData.name !== "HYMotion3DModelLoader") {
+                                    isPlaying = true;
+                                    playBtn.innerText = "Pause";
+                                    startAnimating(); // Start animation loop
+                                }
+                                frameAccumulator = 0; // Reset accumulator
+                            }
 
-                        // Show Transform and Apply buttons for loader
-                        if (nodeData.name === "HYMotion3DModelLoader") {
-                            applyBtn.style.display = "block";
-                            transformBtn.style.display = "block";
-                        }
+                            statusLabel.innerText = total > 1 ? `Loaded ${loadedModels.length}/${total}` : "Model Loaded";
 
-                        // Apply current transform widget values immediately
-                        refreshTransforms();
-                    }, (xhr) => {
-                        if (xhr.lengthComputable) statusLabel.innerText = `Loading: ${Math.round((xhr.loaded / xhr.total) * 100)}%`;
-                    }, (err) => {
+                            // Initialize hit proxies for the new model
+                            updateHitProxies();
+                            requestRender(); // Trigger render
+
+                            if (total > 1) {
+                                // Center on all models
+                                const group = new THREE.Group();
+                                loadedModels.forEach(m => group.add(m.model.clone())); // Dummy group for centering auto-box
+                                centerCameraOnObject(group);
+                            } else {
+                                centerCameraOnObject(fbx);
+                            }
+
+                            // Show Transform and Apply buttons for loader
+                            if (nodeData.name === "HYMotion3DModelLoader") {
+                                applyBtn.style.display = "block";
+                                transformBtn.style.display = "block";
+                            }
+
+                            // Apply current transform widget values immediately
+                            refreshTransforms();
+                        }); // Close requestAnimationFrame
+                    }, onProgress, (err) => {
                         console.error("[HY-Motion] Load fail:", err);
                         statusLabel.innerText = "Load Error";
                         statusLabel.style.color = "red";
                     });
+
 
                 } catch (e) {
                     console.error("3D Load Error:", e);
@@ -1493,6 +1597,8 @@ app.registerExtension({
                 await ensureInitialized();
 
                 if (data.motions) {
+                    // Use a hash or simply compare array lengths/first few elements if possible, 
+                    // but for now, we'll keep the string compare but ensure we don't hold multiple copies.
                     const motionsStr = typeof data.motions === 'string' ? data.motions : JSON.stringify(data.motions);
                     if (motionsStr !== lastMotionsData) {
                         lastMotionsData = motionsStr;
@@ -1726,6 +1832,50 @@ app.registerExtension({
                 updateSkeletons(currentFrame);
                 requestRender(); // Trigger single render
             };
+
+            // Proper cleanup when node is removed
+            this.onRemoved = function () {
+                console.log("[HY-Motion] Removing 3D Viewer Node and cleaning up resources:", node.id);
+
+                // Stop animation
+                stopAnimating();
+
+                // Remove observers
+                if (this._visibilityObserver) {
+                    this._visibilityObserver.disconnect();
+                    this._visibilityObserver = null;
+                }
+                if (this._resizeObserver) {
+                    this._resizeObserver.disconnect();
+                    this._resizeObserver = null;
+                }
+
+                // Remove global event listeners
+                if (this._handleKeyPress) {
+                    document.removeEventListener('keydown', this._handleKeyPress);
+                    this._handleKeyPress = null;
+                }
+
+                // Dispose Three.js resources
+                if (scene) {
+                    scene.traverse((object) => {
+                        disposeObject(object);
+                    });
+                }
+                if (renderer) {
+                    renderer.dispose();
+                    if (renderer.domElement && renderer.domElement.parentNode) {
+                        renderer.domElement.parentNode.removeChild(renderer.domElement);
+                    }
+                    renderer = null;
+                }
+
+                bboxCache.clear();
+                scene = null;
+                camera = null;
+                orbitControls = null;
+            };
+
             return r;
         };
 
