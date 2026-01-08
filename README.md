@@ -4,7 +4,7 @@
 </p>
 
 <p align="center">
-  <a href="https://www.python.org/downloads/"><img alt="Python 3.9+" src="https://img.shields.io/badge/python-3.9+-blue.svg"></a>
+  <a href="https://www.python.org/downloads/"><img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11+-blue.svg"></a>
   <a href="https://github.com/comfyanonymous/ComfyUI"><img alt="ComfyUI" src="https://img.shields.io/badge/ComfyUI-compatible-green.svg"></a>
 </p>
 
