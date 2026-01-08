@@ -163,7 +163,7 @@ A sample workflow is included at `workflows/HunyuanMotion.json`. Load it via **F
 | FBX | ✅ | ✅ | Industry-standard animation format |
 
 ### Requirements
-- Python 3.9+
+- Python 3.11+
 - CUDA-compatible GPU (5GB+ VRAM recommended)
 - ComfyUI (latest version)
 
