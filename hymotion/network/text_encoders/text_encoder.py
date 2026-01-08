@@ -241,9 +241,25 @@ class HYTextModel(nn.Module):
                 missing_keys.append(f"{key} (error: {str(e)})")
                 continue
         
-        # Safety Fix: Ensure NO module is left with weight=None
+        # Safety Fix: Ensure NO module is left with weight=None or on meta device
         for name, mod in model.named_modules():
             is_ggml_layer = hasattr(mod, "ggml_load_from_state_dict") or "GGMLLayer" in mod.__class__.__name__
+            
+            # Check for parameters on meta device
+            for p_name, param in mod.named_parameters(recurse=False):
+                if param is not None and param.device.type == "meta":
+                    print(f"[HYTextModel] WARNING: Materializing missing parameter '{name}.{p_name}' from meta tensor")
+                    # Use to_empty to materialize on the target device
+                    mod.to_empty(device=target_device, recurse=False)
+                    break # to_empty handles all params in this module
+            
+            # Check for buffers on meta device
+            for b_name, buffer in mod.named_buffers(recurse=False):
+                if buffer is not None and buffer.device.type == "meta":
+                    print(f"[HYTextModel] WARNING: Materializing missing buffer '{name}.{b_name}' from meta tensor")
+                    mod.to_empty(device=target_device, recurse=False)
+                    break
+
             if is_ggml_layer and hasattr(mod, "weight") and (mod.weight is None or mod.weight.device.type == "meta"):
                 shape = getattr(mod, "tensor_shape", None)
                 if shape is None:

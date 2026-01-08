@@ -26,7 +26,7 @@ def rotation_6d_to_matrix(d6: Tensor) -> Tensor:
     b1 = F.normalize(a1, dim=-1)
     b2 = a2 - (b1 * a2).sum(-1, keepdim=True) * b1
     b2 = F.normalize(b2, dim=-1)
-    b3 = torch.cross(b1, b2, dim=-1)
+    b3 = torch.linalg.cross(b1, b2, dim=-1)
     return torch.stack((b1, b2, b3), dim=-2)
 
 
@@ -351,7 +351,7 @@ def rot6d_to_rotation_matrix(rot6d):
     a2 = x[..., 1]
     b1 = F.normalize(a1, dim=-1)
     b2 = F.normalize(a2 - torch.einsum("...i,...i->...", b1, a2).unsqueeze(-1) * b1, dim=-1)
-    b3 = torch.cross(b1, b2, dim=-1)
+    b3 = torch.linalg.cross(b1, b2, dim=-1)
     return torch.stack((b1, b2, b3), dim=-1)
 
 

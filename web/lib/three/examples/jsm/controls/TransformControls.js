@@ -20,7 +20,6 @@ import {
 	Vector3
 } from '../../../three.module.js';
 
-
 const _raycaster = new Raycaster();
 
 const _tempVector = new Vector3();

@@ -18,7 +18,7 @@ from torchdiffeq import odeint
 from .hymotion.utils.loaders import load_object
 from .hymotion.network.text_encoders.text_encoder import HYTextModel
 from .hymotion.pipeline.motion_diffusion import length_to_mask, randn_tensor, MotionGeneration
-from .hymotion.utils.geometry import rot6d_to_rotation_matrix
+from .hymotion.utils.geometry import rot6d_to_rotation_matrix, rotation_matrix_to_rot6d, axis_angle_to_matrix
 from .hymotion.pipeline.body_model import WoodenMesh, construct_smpl_data_dict
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -716,6 +716,11 @@ class HYMotionSampler:
         x_length = torch.LongTensor([num_frames] * num_samples).to(dit_model.device)
         x_mask_temporal = length_to_mask(x_length, train_frames).to(dit_model.device)
         
+        if torch.isnan(vtxt).any():
+            print("[HY-Motion] ERROR: vtxt features contain NaNs before sampling!")
+        if torch.isnan(ctxt).any():
+            print("[HY-Motion] ERROR: ctxt features contain NaNs before sampling!")
+            
         # Classifier-free guidance setup (match official research paper & implementation)
         do_cfg = cfg_scale > 1.0
         if do_cfg:
@@ -732,6 +737,11 @@ class HYMotionSampler:
                 null_ctxt = ctxt
                 null_ctxt_mask = ctxt_mask_temporal
             
+            if torch.isnan(null_vtxt).any():
+                print("[HY-Motion] ERROR: null_vtxt features contain NaNs!")
+            if torch.isnan(null_ctxt).any():
+                print("[HY-Motion] ERROR: null_ctxt features contain NaNs!")
+
             # Double the batch for CFG (uncond first, then cond)
             vtxt_cfg = torch.cat([null_vtxt, vtxt], dim=0)
             ctxt_cfg = torch.cat([null_ctxt, ctxt], dim=0)
@@ -1304,20 +1314,55 @@ class HYMotionRetargetFBX:
                     "default": True,
                     "tooltip": "Use neutral finger rest pose to preserve natural finger curl from source animation. Disable for legacy behavior."
                 }),
+                "unique_names": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "If enabled, adds timestamps to filenames to prevent overwriting. Disable to use fixed names for easier iteration in Godot."
+                }),
             }
         }
     
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("fbx_paths",)
+    RETURN_TYPES = ("STRING", "FBX")
+    RETURN_NAMES = ("fbx_paths", "fbx")
     FUNCTION = "retarget"
     CATEGORY = "HY-Motion"
     OUTPUT_NODE = True
     
     def retarget(self, motion_data, target_fbx, output_dir="hymotion_retarget", filename_prefix="retarget", 
-                 mapping_file="", yaw_offset=0.0, scale=0.0, neutral_fingers=True):
+                 mapping_file="", yaw_offset=0.0, scale=0.0, neutral_fingers=True, unique_names=True):
         """Retarget motion to custom FBX skeleton."""
-        if not target_fbx or not os.path.exists(target_fbx):
-            raise ValueError(f"Target FBX file not found: {target_fbx}")
+        if not target_fbx:
+            raise ValueError("Target FBX file path is empty. Please provide a path to a character FBX.")
+            
+        # Resolve path (handles 'input/file.fbx' or absolute paths)
+        resolved_path = folder_paths.get_annotated_filepath(target_fbx)
+        if resolved_path is None or not os.path.exists(resolved_path):
+            # Fallback for absolute paths or direct filenames
+            if os.path.exists(target_fbx):
+                resolved_path = target_fbx
+            else:
+                # Try input folder fallback
+                input_dir = folder_paths.get_input_directory()
+                
+                # Strip 'input/' prefix if it's there for the fallback join
+                clean_target = target_fbx
+                if target_fbx.startswith("input/"):
+                    clean_target = target_fbx[6:]
+                
+                potential_path = os.path.join(input_dir, clean_target)
+                if os.path.exists(potential_path):
+                    resolved_path = potential_path
+                else:
+                    # Final attempt: list files in input dir to help user debug
+                    print(f"[HY-Motion] ERROR: Target FBX not found: {target_fbx}")
+                    print(f"[HY-Motion] Checked: {potential_path}")
+                    try:
+                        files = os.listdir(input_dir)
+                        print(f"[HY-Motion] Files in input directory: {files[:10]}...")
+                    except:
+                        pass
+                    raise ValueError(f"Target FBX file not found: {target_fbx}")
+        
+        target_fbx = resolved_path
         
         # Create output directory
         full_output_dir = os.path.join(COMFY_OUTPUT_DIR, output_dir)
@@ -1331,7 +1376,11 @@ class HYMotionRetargetFBX:
         for batch_idx in range(motion_data.batch_size):
             # Generate temp NPZ from motion_data for this batch item
             temp_npz = os.path.join(COMFY_OUTPUT_DIR, f"hymotion_temp_{timestamp}_{batch_idx}.npz")
-            output_fbx = os.path.join(full_output_dir, f"{filename_prefix}_{timestamp}_{unique_id}_{batch_idx:03d}.fbx")
+            
+            if unique_names:
+                output_fbx = os.path.join(full_output_dir, f"{filename_prefix}_{timestamp}_{unique_id}_{batch_idx:03d}.fbx")
+            else:
+                output_fbx = os.path.join(full_output_dir, f"{filename_prefix}_{batch_idx:03d}.fbx")
             
             try:
                 # Save motion data to temp NPZ (single batch item)
@@ -1421,7 +1470,229 @@ class HYMotionRetargetFBX:
         result = "\n".join(relative_paths)
         
         print(f"[HYMotionRetargetFBX] Successfully retargeted {len(output_fbx_files)} batch item(s)")
-        return (result,)
+        
+        # Format for ComfyUI output/history so the Godot bridge can find it
+        fbx_info = []
+        for p in output_fbx_files:
+            fbx_info.append({
+                "filename": os.path.basename(p),
+                "subfolder": output_dir,
+                "type": "output"
+            })
+            
+        return {"ui": {"fbx": fbx_info}, "result": (result, fbx_info)}
+
+
+class HYMotionSMPLToData:
+    """Convert SMPL parameters (from GVHMR/MotionCapture) to HY-Motion Data format"""
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "smpl_params": ("SMPL_PARAMS", {"tooltip": "SMPL parameters from GVHMR or other motion capture nodes."}),
+            },
+            "optional": {
+                "text": ("STRING", {"default": "", "multiline": True, "tooltip": "Optional description. If empty, defaults to 'motion from smpl'."}),
+                "duration": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 300.0, "step": 0.1, "tooltip": "Duration in seconds. If 0.0, it will be auto-calculated based on frame count at 30 FPS."}),
+            }
+        }
+
+    RETURN_TYPES = ("HYMOTION_DATA",)
+    RETURN_NAMES = ("motion_data",)
+    FUNCTION = "convert"
+    CATEGORY = "HY-Motion/utils"
+
+    def convert(self, smpl_params, text="", duration=0.0):
+        # Handle list of params if batched
+        if isinstance(smpl_params, list):
+            params = smpl_params[0]
+        else:
+            params = smpl_params
+
+        if params is None:
+            raise ValueError("[HY-Motion] smpl_params is None. Ensure the source node (like GVHMR) is connected and has run.")
+
+        # DEEP ANALYZE: Handle GVHMR nested structure
+        if "global" in params:
+            print("[HY-Motion] Detected GVHMR nested structure, using 'global' parameters")
+            inner_params = params["global"]
+        elif "incam" in params:
+            print("[HY-Motion] Detected GVHMR nested structure, using 'incam' parameters")
+            inner_params = params["incam"]
+        else:
+            inner_params = params
+
+        # Extract poses and trans
+        poses = inner_params.get("poses", None)
+        body_pose = inner_params.get("body_pose", None)
+        global_orient = inner_params.get("global_orient", None)
+        trans = inner_params.get("trans", inner_params.get("transl", None))
+
+        # Robust key detection
+        if poses is None and (body_pose is None or global_orient is None):
+            for k in inner_params.keys():
+                if "pose" in k.lower() and isinstance(inner_params[k], (torch.Tensor, np.ndarray)):
+                    poses = inner_params[k]
+                    print(f"[HY-Motion] Guessed pose data from key: {k}")
+                    break
+            
+            if poses is None:
+                raise ValueError(f"[HY-Motion] SMPL_PARAMS missing pose data. Available keys: {list(inner_params.keys())}")
+
+        # Convert to torch and handle device
+        def to_tensor(x):
+            if x is None: return None
+            if isinstance(x, np.ndarray):
+                return torch.from_numpy(x).float()
+            return x.float() if isinstance(x, torch.Tensor) else x
+
+        poses = to_tensor(poses)
+        body_pose = to_tensor(body_pose)
+        global_orient = to_tensor(global_orient)
+        trans = to_tensor(trans)
+
+        # Combine body_pose and global_orient if needed
+        if poses is None:
+            if len(body_pose.shape) == 2:
+                body_pose = body_pose.reshape(body_pose.shape[0], -1, 3)
+            if len(global_orient.shape) == 2:
+                global_orient = global_orient.reshape(global_orient.shape[0], 1, 3)
+            
+            # Ensure same device before cat
+            device = body_pose.device
+            poses = torch.cat([global_orient.to(device), body_pose], dim=1)
+
+        # Ensure 3D (T, J, 3) or 4D (B, T, J, 3)
+        if len(poses.shape) == 2:
+            poses = poses.reshape(poses.shape[0], -1, 3)
+        
+        # Detect if input is batched (B, T, J, 3)
+        is_batched = len(poses.shape) == 4
+        if not is_batched:
+            poses = poses.unsqueeze(0) # (1, T, J, 3)
+        
+        batch_size, num_frames, num_joints, _ = poses.shape
+        device = poses.device
+        dtype = poses.dtype
+        
+        # Support variable joint counts and auto-padding for hands/feet
+        # HY-Motion's internal model (WoodenMesh) and FBX exporter expect 52 joints (SMPL-H).
+        if num_joints < 52:
+            print(f"[HY-Motion] Input has {num_joints} joints. Auto-padding to reach 52 joints (SMPL-H).")
+            
+            # Import mean hand poses from body_model if possible, otherwise use zeros
+            try:
+                from .hymotion.pipeline.body_model import LEFT_HAND_MEAN_AA, RIGHT_HAND_MEAN_AA
+                left_hand = torch.tensor(LEFT_HAND_MEAN_AA, device=device, dtype=dtype).reshape(1, 1, 15, 3).expand(batch_size, num_frames, -1, -1)
+                right_hand = torch.tensor(RIGHT_HAND_MEAN_AA, device=device, dtype=dtype).reshape(1, 1, 15, 3).expand(batch_size, num_frames, -1, -1)
+                mean_hand_padding = torch.cat([left_hand, right_hand], dim=2) # (B, T, 30, 3)
+            except ImportError:
+                print("[HY-Motion] Warning: Could not import mean hand poses, using zeros for padding.")
+                mean_hand_padding = torch.zeros((batch_size, num_frames, 30, 3), device=device, dtype=dtype)
+
+            # If we have 22 joints, we pad with 30 hand joints to get 52
+            if num_joints == 22:
+                poses = torch.cat([poses, mean_hand_padding], dim=2)
+            else:
+                # For other counts (like 24), we truncate to 22 first to ensure standard SMPL-H mapping
+                # or we pad to 52 if we know the mapping. For robustness, we'll pad with zeros/mean up to 52.
+                needed = 52 - num_joints
+                padding = torch.zeros((batch_size, num_frames, needed, 3), device=device, dtype=dtype)
+                poses = torch.cat([poses, padding], dim=2)
+            
+            num_joints = 52
+            print(f"[HY-Motion] Padded poses shape: {poses.shape}")
+            
+        elif num_joints > 52:
+            # If we have more than 52 joints (e.g. SMPL-X with 55 or SAM3D with 70), 
+            # we truncate to 52 to maintain compatibility with the 52-joint FBX skeleton.
+            print(f"[HY-Motion] Truncating joints from {num_joints} to 52 for SMPL-H compatibility")
+            poses = poses[:, :, :52, :]
+            num_joints = 52
+        
+        if trans is None:
+            print("[HY-Motion] Warning: No translation found, using zeros")
+            trans = torch.zeros((batch_size, num_frames, 3), device=device, dtype=dtype)
+        else:
+            # Ensure trans is (B, T, 3)
+            if len(trans.shape) == 2:
+                if is_batched:
+                    # If poses were batched but trans wasn't, we might have a problem.
+                    # Assume trans applies to the whole batch or is the first item.
+                    trans = trans.unsqueeze(0).expand(batch_size, -1, -1)
+                else:
+                    trans = trans.unsqueeze(0)
+            
+            # Ensure trans matches num_frames
+            if trans.shape[1] != num_frames:
+                print(f"[HY-Motion] Warning: Translation frames ({trans.shape[1]}) mismatch poses ({num_frames}). Truncating/Padding.")
+                if trans.shape[1] > num_frames:
+                    trans = trans[:, :num_frames, :]
+                else:
+                    pad = torch.zeros((batch_size, num_frames - trans.shape[1], 3), device=device, dtype=dtype)
+                    trans = torch.cat([trans, pad], dim=1)
+
+        # QUALITY CHECK: NaN/Inf detection
+        if torch.isnan(poses).any() or torch.isinf(poses).any():
+            print("[HY-Motion] ERROR: Input poses contain NaNs or Infs! Cleaning with zeros.")
+            poses = torch.nan_to_num(poses)
+        if torch.isnan(trans).any() or torch.isinf(trans).any():
+            print("[HY-Motion] ERROR: Input translation contains NaNs or Infs! Cleaning with zeros.")
+            trans = torch.nan_to_num(trans)
+
+        # Auto-calculate duration
+        if duration <= 0.0:
+            fps = params.get("mocap_framerate", params.get("fps", inner_params.get("mocap_framerate", 30.0)))
+            duration = num_frames / float(fps)
+            print(f"[HY-Motion] Auto-calculated duration: {duration:.2f}s ({num_frames} frames @ {fps} FPS)")
+
+        if not text.strip():
+            text = "motion from smpl"
+
+        # Convert axis-angle to rot6d
+        # CRITICAL FIX: Use rotation_matrix_to_rot6d (column-based) to match HY-Motion's decoder
+        rot_mat = axis_angle_to_matrix(poses)
+        rot6d = rotation_matrix_to_rot6d(rot_mat)
+
+        # Generate 3D keypoints for preview (matching HYMotionSampler logic)
+        global _WOODEN_MESH_CACHE
+        if _WOODEN_MESH_CACHE is None:
+            print("[HY-Motion] Loading 3D body model for converter preview...")
+            _WOODEN_MESH_CACHE = WoodenMesh().to(device).eval()
+        
+        body_model = _WOODEN_MESH_CACHE.to(device)
+        with torch.no_grad():
+            body_params = {
+                "rot6d": rot6d,
+                "trans": trans
+            }
+            # Use forward_batch for efficiency
+            body_out = body_model.forward_batch(body_params, chunk_size=64)
+            keypoints3d = body_out["keypoints3d"]
+
+        # Move to CPU for HYMOTION_DATA storage (standard practice)
+        rot6d = rot6d.cpu()
+        trans = trans.cpu()
+        rot_mat = rot_mat.cpu()
+        keypoints3d = keypoints3d.cpu()
+
+        output_dict = {
+            "rot6d": rot6d,
+            "transl": trans,
+            "root_rotations_mat": rot_mat[:, :, 0],
+            "keypoints3d": keypoints3d
+        }
+
+        motion_data = HYMotionData(
+            output_dict=output_dict,
+            text=text,
+            duration=duration,
+            seeds=[0] * batch_size,
+            device_info="cpu"
+        )
+
+        print(f"[HY-Motion] Successfully converted {num_frames} frames ({num_joints} joints) from SMPL to HY-Motion format (Batch: {batch_size}).")
+        return (motion_data,)
 
 
 NODE_CLASS_MAPPINGS_MODULAR = {
@@ -1433,6 +1704,7 @@ NODE_CLASS_MAPPINGS_MODULAR = {
     "HYMotionPromptRewrite": HYMotionPromptRewrite,
     "HYMotionSaveNPZ": HYMotionSaveNPZ,
     "HYMotionRetargetFBX": HYMotionRetargetFBX,
+    "HYMotionSMPLToData": HYMotionSMPLToData,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS_MODULAR = {
@@ -1444,5 +1716,6 @@ NODE_DISPLAY_NAME_MAPPINGS_MODULAR = {
     "HYMotionPromptRewrite": "HY-Motion Prompt Rewrite",
     "HYMotionSaveNPZ": "HY-Motion Save NPZ",
     "HYMotionRetargetFBX": "HY-Motion Retarget to FBX",
+    "HYMotionSMPLToData": "HY-Motion SMPL to Data",
 }
 

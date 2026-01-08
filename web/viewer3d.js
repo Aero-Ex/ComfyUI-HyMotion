@@ -1,9 +1,9 @@
-// Local Three.js bundle paths (no CDN latency)
-const THREE_URL = "./lib/three/three.module.js";
-const FBX_LOADER_URL = "./lib/three/examples/jsm/loaders/FBXLoader.js";
-const ORBIT_CONTROLS_URL = "./lib/three/examples/jsm/controls/OrbitControls.js";
-const TRANSFORM_CONTROLS_URL = "./lib/three/examples/jsm/controls/TransformControls.js";
-const GLTF_EXPORTER_URL = "./lib/three/examples/jsm/exporters/GLTFExporter.js";
+// Three.js CDN URLs (reliable with all dependencies)
+const THREE_URL = "https://esm.sh/three@0.160.0";
+const FBX_LOADER_URL = "https://esm.sh/three@0.160.0/examples/jsm/loaders/FBXLoader.js";
+const ORBIT_CONTROLS_URL = "https://esm.sh/three@0.160.0/examples/jsm/controls/OrbitControls.js";
+const TRANSFORM_CONTROLS_URL = "https://esm.sh/three@0.160.0/examples/jsm/controls/TransformControls.js";
+const GLTF_EXPORTER_URL = "https://esm.sh/three@0.160.0/examples/jsm/exporters/GLTFExporter.js";
 // Note: GLTFLoader and OBJLoader will be loaded from CDN as fallback if not bundled
 const GLTF_LOADER_URL = "https://esm.sh/three@0.160.0/examples/jsm/loaders/GLTFLoader.js";
 const OBJ_LOADER_URL = "https://esm.sh/three@0.160.0/examples/jsm/loaders/OBJLoader.js";

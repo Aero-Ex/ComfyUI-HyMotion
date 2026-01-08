@@ -11,7 +11,7 @@ except ImportError:
 
 import numpy as np
 import torch
-from transforms3d.euler import mat2euler
+from scipy.spatial.transform import Rotation as R
 
 from .geometry import angle_axis_to_rotation_matrix, rot6d_to_rotation_matrix, rotation_matrix_to_angle_axis
 
@@ -151,7 +151,7 @@ def _animateSingleChannel(animLayer, component, name, values, frameDuration):
     for nth in range(len(values)):
         time.SetSecondDouble(nth * frameDuration)
         keyIndex = curve.KeyAdd(time)[0]
-        curve.KeySetValue(keyIndex, values[nth][ncomp])
+        curve.KeySetValue(keyIndex, float(values[nth][ncomp]))
         curve.KeySetInterpolation(keyIndex, fbx.FbxAnimCurveDef.EInterpolationType.eInterpolationConstant)
     curve.KeyModifyEnd()
 
@@ -161,7 +161,9 @@ def _animateRotationKeyFrames(animLayer, node, rot_matrices, frameDuration):
     rotations = []
     for nth in range(len(rot_matrices)):
         # Convert rotation matrix to Euler angles (XYZ order)
-        euler = np.rad2deg(mat2euler(rot_matrices[nth], axes="sxyz"))
+        # Ensure contiguous array for NumPy 2.0 compatibility with SciPy
+        mat = np.ascontiguousarray(rot_matrices[nth])
+        euler = R.from_matrix(mat).as_euler("xyz", degrees=True)
         rotations.append(euler)
 
     _animateSingleChannel(animLayer, node.LclRotation, "X", rotations, frameDuration)
@@ -174,7 +176,8 @@ def _animateTranslationKeyFrames(animLayer, node, translations, frameDuration):
     # Ensure translations is a numpy array with shape (num_frames, 3)
     if isinstance(translations, torch.Tensor):
         translations = translations.numpy()
-    translations = np.asarray(translations, dtype=np.float64)
+    translations = np.array(translations, dtype=np.float64)
+    translations = np.ascontiguousarray(translations)
 
     if len(translations.shape) == 1:
         # Single frame, reshape to (1, 3)
@@ -226,7 +229,7 @@ def _applyAnimationToSkeleton(fbxScene, nodes_map, rot_matrices, translations, f
     if root_fbx_name and root_fbx_name in nodes_map:
         root_node_temp = nodes_map[root_fbx_name]
         initial_trans = root_node_temp.LclTranslation.Get()
-        root_initial_translation = np.array([initial_trans[0], initial_trans[1], initial_trans[2]])
+        root_initial_translation = np.array([float(initial_trans[0]), float(initial_trans[1]), float(initial_trans[2])])
         print(f"Root initial LclTranslation from template: {root_initial_translation}")
 
     # Animate each joint
@@ -261,7 +264,7 @@ def _applyAnimationToSkeleton(fbxScene, nodes_map, rot_matrices, translations, f
             # Add initial offset to translations (like smplh2woodfbx.py does: Translates[0] + trans)
             # The translations input is relative displacement, we need to add the template's initial position
             if root_initial_translation is not None:
-                final_translations = translations + root_initial_translation
+                final_translations = np.ascontiguousarray(translations + root_initial_translation)
                 print(
                     f"Applying root translation to '{fbx_node_name}', frames={num_frames}, "
                     f"initial_offset={root_initial_translation}, "
@@ -290,8 +293,8 @@ def _applyAnimationToSkeleton(fbxScene, nodes_map, rot_matrices, translations, f
                 root_node = nodes_map[candidate]
                 # Get initial translation for fallback node
                 initial_trans = root_node.LclTranslation.Get()
-                fallback_initial = np.array([initial_trans[0], initial_trans[1], initial_trans[2]])
-                final_translations = translations + fallback_initial
+                fallback_initial = np.array([float(initial_trans[0]), float(initial_trans[1]), float(initial_trans[2])])
+                final_translations = np.ascontiguousarray(translations + fallback_initial)
                 print(
                     f"Found root node by fallback: '{candidate}', initial_offset={fallback_initial}, applying translation..."
                 )
