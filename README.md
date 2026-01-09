@@ -28,7 +28,7 @@ A full-featured ComfyUI implementation of **HY-MOTION 1.0**, enabling high-fidel
 
 ## 🚀 Installation
 
-### Option 1: ComfyUI Manager (Recommended)
+### Option 1: ComfyUI Manager (May be In future LOL)
 Search for **"ComfyUI-HyMotion"** in the ComfyUI Manager and click Install.
 
 ### Option 2: Manual Installation
