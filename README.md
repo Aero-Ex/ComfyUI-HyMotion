@@ -52,8 +52,8 @@ Download and place in `ComfyUI/models/hymotion/`:
 
 | Model | Size | Description | Download |
 |-------|------|-------------|----------|
-| **HY-Motion-1.0** | ~2GB | Full quality model | [📥 latest.ckpt](https://huggingface.co/SumitMathur8956/Hy-Motion1.0/resolve/main/hymotion/HY-Motion-1.0/latest.ckpt) |
-| **HY-Motion-1.0-Lite** | ~800MB | Faster, lower VRAM | [📥 latest.ckpt](https://huggingface.co/SumitMathur8956/Hy-Motion1.0/resolve/main/hymotion/HY-Motion-1.0-Lite/latest.ckpt) |
+| **HY-Motion-1.0** | ~2GB | Full quality model | [📥 latest.ckpt](https://Aero-Ex/Hy-Motion1.0/resolve/main/hymotion/HY-Motion-1.0/latest.ckpt) |
+| **HY-Motion-1.0-Lite** | ~800MB | Faster, lower VRAM | [📥 latest.ckpt](https://huggingface.co/Aero-Ex/Hy-Motion1.0/resolve/main/hymotion/HY-Motion-1.0-Lite/latest.ckpt) |
 
 **Directory structure:**
 ```
@@ -70,9 +70,9 @@ Download and place in `ComfyUI/models/text_encoders/`:
 
 | Encoder | Format | Description | Download |
 |---------|--------|-------------|----------|
-| **CLIP ViT-L/14** | SafeTensors | Visual-text encoder | [📥 clip-vit-large-patch14.safetensors](https://huggingface.co/SumitMathur8956/Hy-Motion1.0/resolve/main/text_encoders/clip-vit-large-patch14.safetensors) |
-| **Qwen3-8B** | FP8 | Language model (16GB+ VRAM) | [📥 Qwen3-8B_fp8.safetensors](https://huggingface.co/SumitMathur8956/Hy-Motion1.0/resolve/main/text_encoders/Qwen3-8B_fp8.safetensors) |
-| **Qwen3-8B** | GGUF | Quantized (lower VRAM) | [📁 Browse GGUF options](https://huggingface.co/SumitMathur8956/Hy-Motion1.0/tree/main/text_encoders/Qwen3-8B-GGUF) |
+| **CLIP ViT-L/14** | SafeTensors | Visual-text encoder | [📥 clip-vit-large-patch14.safetensors](https://huggingface.co/Aero-Ex/Hy-Motion1.0/resolve/main/text_encoders/clip-vit-large-patch14.safetensors) |
+| **Qwen3-8B** | FP8 | Language model (16GB+ VRAM) | [📥 Qwen3-8B_fp8.safetensors](https://huggingface.co/Aero-Ex/Hy-Motion1.0/resolve/main/text_encoders/Qwen3-8B_fp8.safetensors) |
+| **Qwen3-8B** | GGUF | Quantized (lower VRAM) | [📁 Browse GGUF options](https://huggingface.co/Aero-Ex/Hy-Motion1.0/tree/main/text_encoders/Qwen3-8B-GGUF) |
 
 > [!IMPORTANT]
 > To use GGUF text encoders, install [ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF) first.
