@@ -1275,6 +1275,7 @@ app.registerExtension({
 
             // Separate function to update hit proxies (only when needed)
             const updateHitProxies = () => {
+                if (!scene || !THREE) return; // Guard against race condition during init
                 const now = Date.now();
                 for (const obj of loadedModels) {
                     if (!obj.hitProxy) {
@@ -1307,6 +1308,7 @@ app.registerExtension({
 
             // Separate function to update selection highlights (only when needed)
             const updateSelectionHighlights = () => {
+                if (!scene || !THREE) return; // Guard against race condition during init
                 const now = Date.now();
                 for (const selection of selectedModels) {
                     if (selection.highlight) {
