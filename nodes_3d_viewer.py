@@ -6,6 +6,127 @@ import folder_paths
 from server import PromptServer
 from aiohttp import web
 
+# Server route for in-place FBX export
+@PromptServer.instance.routes.post("/hymotion/export_inplace")
+async def export_inplace_fbx(request):
+    """
+    Apply in-place animation to an FBX file (zeroes X/Z root translation).
+    Request JSON: { "input_path": "output/path/to/file.fbx" }
+    Returns the processed FBX file.
+    """
+    try:
+        data = await request.json()
+        input_path = data.get("input_path", "")
+        
+        if not input_path:
+            return web.json_response({"error": "No input_path provided"}, status=400)
+        
+        # Resolve the full path
+        if input_path.startswith("output/"):
+            rel_path = input_path[7:]  # Remove "output/" prefix
+            full_path = os.path.join(folder_paths.get_output_directory(), rel_path)
+        elif input_path.startswith("input/"):
+            rel_path = input_path[6:]  # Remove "input/" prefix
+            full_path = os.path.join(folder_paths.get_input_directory(), rel_path)
+        else:
+            full_path = input_path
+        
+        if not os.path.exists(full_path):
+            return web.json_response({"error": f"File not found: {full_path}"}, status=404)
+        
+        # Try to import FBX SDK and apply in-place
+        try:
+            import fbx
+            from fbx import FbxTime, FbxAnimStack, FbxAnimLayer
+            
+            # Load the FBX
+            manager = fbx.FbxManager.Create()
+            ios = fbx.FbxIOSettings.Create(manager, fbx.IOSROOT)
+            manager.SetIOSettings(ios)
+            
+            importer = fbx.FbxImporter.Create(manager, "")
+            if not importer.Initialize(full_path, -1, ios):
+                manager.Destroy()
+                return web.json_response({"error": "Failed to load FBX"}, status=500)
+            
+            scene = fbx.FbxScene.Create(manager, "")
+            importer.Import(scene)
+            importer.Destroy()
+            
+            # Find the root bone (Pelvis, Hips, etc)
+            root_names = ["Pelvis", "pelvis", "Hips", "hips", "Root", "root", "mixamorig:Hips"]
+            root_node = None
+            
+            def find_node(node, names):
+                if node.GetName() in names:
+                    return node
+                for i in range(node.GetChildCount()):
+                    result = find_node(node.GetChild(i), names)
+                    if result:
+                        return result
+                return None
+            
+            root_node = find_node(scene.GetRootNode(), root_names)
+            
+            if root_node:
+                # Get animation stack
+                stack = scene.GetCurrentAnimationStack()
+                if stack:
+                    layer = stack.GetMember(0) if stack.GetMemberCount() > 0 else None
+                    if layer:
+                        # Get X and Z translation curves
+                        tx_curve = root_node.LclTranslation.GetCurve(layer, "X", False)
+                        tz_curve = root_node.LclTranslation.GetCurve(layer, "Z", False)
+                        
+                        # Get initial values at frame 0
+                        if tx_curve and tx_curve.KeyGetCount() > 0:
+                            init_x = tx_curve.KeyGetValue(0)
+                            tx_curve.KeyModifyBegin()
+                            for i in range(tx_curve.KeyGetCount()):
+                                tx_curve.KeySetValue(i, init_x)
+                            tx_curve.KeyModifyEnd()
+                        
+                        if tz_curve and tz_curve.KeyGetCount() > 0:
+                            init_z = tz_curve.KeyGetValue(0)
+                            tz_curve.KeyModifyBegin()
+                            for i in range(tz_curve.KeyGetCount()):
+                                tz_curve.KeySetValue(i, init_z)
+                            tz_curve.KeyModifyEnd()
+            
+            # Save to temp file
+            import tempfile
+            import shutil
+            
+            with tempfile.NamedTemporaryFile(suffix=".fbx", delete=False) as tmp:
+                temp_path = tmp.name
+            
+            exporter = fbx.FbxExporter.Create(manager, "")
+            file_format = manager.GetIOPluginRegistry().GetNativeWriterFormat()
+            if exporter.Initialize(temp_path, file_format, ios):
+                exporter.Export(scene)
+            exporter.Destroy()
+            manager.Destroy()
+            
+            # Read the file and return it
+            with open(temp_path, "rb") as f:
+                fbx_data = f.read()
+            os.remove(temp_path)
+            
+            filename = os.path.basename(full_path).replace(".fbx", "_inplace.fbx")
+            return web.Response(
+                body=fbx_data,
+                content_type="application/octet-stream",
+                headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+            )
+            
+        except ImportError:
+            return web.json_response({"error": "FBX SDK not available"}, status=500)
+            
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return web.json_response({"error": str(e)}, status=500)
+
 class HYMotion3DModelLoader:
     """
     Standalone viewer for 3D models (FBX, GLB, GLTF, OBJ).

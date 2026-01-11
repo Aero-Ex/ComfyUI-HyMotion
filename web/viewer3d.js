@@ -1,12 +1,11 @@
-// Three.js CDN URLs (reliable with all dependencies)
-const THREE_URL = "https://esm.sh/three@0.160.0";
-const FBX_LOADER_URL = "https://esm.sh/three@0.160.0/examples/jsm/loaders/FBXLoader.js";
-const ORBIT_CONTROLS_URL = "https://esm.sh/three@0.160.0/examples/jsm/controls/OrbitControls.js";
-const TRANSFORM_CONTROLS_URL = "https://esm.sh/three@0.160.0/examples/jsm/controls/TransformControls.js";
-const GLTF_EXPORTER_URL = "https://esm.sh/three@0.160.0/examples/jsm/exporters/GLTFExporter.js";
-// Note: GLTFLoader and OBJLoader will be loaded from CDN as fallback if not bundled
-const GLTF_LOADER_URL = "https://esm.sh/three@0.160.0/examples/jsm/loaders/GLTFLoader.js";
-const OBJ_LOADER_URL = "https://esm.sh/three@0.160.0/examples/jsm/loaders/OBJLoader.js";
+// Three.js Local Paths
+const THREE_URL = "./lib/three/three.module.js";
+const FBX_LOADER_URL = "./lib/three/examples/jsm/loaders/FBXLoader.js";
+const ORBIT_CONTROLS_URL = "./lib/three/examples/jsm/controls/OrbitControls.js";
+const TRANSFORM_CONTROLS_URL = "./lib/three/examples/jsm/controls/TransformControls.js";
+const GLTF_EXPORTER_URL = "./lib/three/examples/jsm/exporters/GLTFExporter.js";
+const GLTF_LOADER_URL = "./lib/three/examples/jsm/loaders/GLTFLoader.js";
+const OBJ_LOADER_URL = "./lib/three/examples/jsm/loaders/OBJLoader.js";
 
 import { app } from "../../../scripts/app.js";
 import { api } from "../../../scripts/api.js";
@@ -161,8 +160,25 @@ app.registerExtension({
             transformBtn.title = "Open transform panel";
             transformBtn.style.cssText = "cursor:pointer; padding:6px 10px; font-size:13px; background:#444; color:#fff; border:1px solid #666; border-radius:3px; display:none; font-weight:500; flex-shrink:0; white-space:nowrap;";
 
+            const focusBtn = document.createElement("button");
+            focusBtn.innerText = "🎯";
+            focusBtn.title = "Center camera on selection";
+            focusBtn.style.cssText = "cursor:pointer; padding:6px 10px; font-size:14px; background:#444; color:#fff; border:1px solid #666; border-radius:3px; font-weight:bold; flex-shrink:0;";
+
+            const inPlaceBtn = document.createElement("button");
+            inPlaceBtn.innerText = "🏃‍♂️";
+            inPlaceBtn.title = "Toggle In-Place Animation (global when no selection, per-selection when selected)";
+            inPlaceBtn.style.cssText = "cursor:pointer; padding:6px 10px; font-size:14px; background:#444; color:#fff; border:1px solid #666; border-radius:3px; font-weight:bold; flex-shrink:0;";
+
+            // selectionInPlaceBtn is now merged into inPlaceBtn - kept for backwards compatibility
+            const selectionInPlaceBtn = document.createElement("button");
+            selectionInPlaceBtn.style.display = "none"; // Hidden - functionality merged into inPlaceBtn
+
             controls.appendChild(gizmoGroup);
             controls.appendChild(playBtn);
+            controls.appendChild(inPlaceBtn);
+            // selectionInPlaceBtn removed from UI - functionality merged into inPlaceBtn
+            controls.appendChild(focusBtn);
             controls.appendChild(cycleBtn);
             controls.appendChild(exportBtn);
             controls.appendChild(transformBtn);
@@ -321,6 +337,8 @@ app.registerExtension({
             if (nodeData.name === "HYMotion3DModelLoader") {
                 playBtn.style.display = "none";
                 progress.style.display = "none";
+                inPlaceBtn.style.display = "none";
+                selectionInPlaceBtn.style.display = "none";
             }
 
             // Hide gizmo controls for Legacy FBX Player
@@ -400,6 +418,7 @@ app.registerExtension({
             let mixers = [];
             let isInitialized = false;
             let isInitializing = false;
+            let initPromise = null;
             let pendingDataQueue = [];
             let lastMotionsData = null;
             let lastFbxUrl = null;
@@ -413,6 +432,7 @@ app.registerExtension({
             let raycaster = null;
             let selectedModels = []; // Array to support multi-selection
             let loadedModels = [];
+            let isInPlace = false;
 
             const SMPL_H_SKELETON = [
                 [0, 1], [0, 2], [0, 3],
@@ -902,6 +922,20 @@ app.registerExtension({
                         exportBtn.title = "Export all selected GLB files";
                     }
                 }
+
+                // Update In-Place Button state based on selection
+                if (count > 0 && nodeData.name !== "HYMotion3DModelLoader") {
+                    // Has selection: show per-selection in-place state
+                    const allInPlace = selectedModels.every(s => s.obj.isInPlace);
+                    inPlaceBtn.innerText = allInPlace ? "🧍‍♂️" : "🏃‍♂️";
+                    inPlaceBtn.style.background = allInPlace ? "#0066cc" : "#444";
+                    inPlaceBtn.title = `In-Place: ${count} selected (${allInPlace ? 'ON' : 'OFF'})`;
+                } else {
+                    // No selection: show global in-place state
+                    inPlaceBtn.innerText = isInPlace ? "🧍‍♂️" : "🏃‍♂️";
+                    inPlaceBtn.style.background = isInPlace ? "#0066cc" : "#444";
+                    inPlaceBtn.title = `Global In-Place: ${isInPlace ? 'ON' : 'OFF'}`;
+                }
             };
 
             const removeSelectionAt = (idx) => {
@@ -969,16 +1003,59 @@ app.registerExtension({
                         if (selection.type !== "model") continue;
 
                         const { fileName, subfolder, fileType } = selection.obj;
+                        const modelIsInPlace = selection.obj.isInPlace || isInPlace;
 
-                        let fetchUrl = `${window.location.origin}/view?type=${encodeURIComponent(fileType || 'output')}&filename=${encodeURIComponent(fileName)}`;
-                        if (subfolder) fetchUrl += `&subfolder=${encodeURIComponent(subfolder)}`;
+                        // Build the file path
+                        let filePath = fileType === 'output' ? `output/${subfolder ? subfolder + '/' : ''}${fileName}` : fileName;
 
-                        const link = document.createElement('a');
-                        link.href = fetchUrl;
-                        link.download = fileName;
-                        document.body.appendChild(link);
-                        link.click();
-                        document.body.removeChild(link);
+                        if (modelIsInPlace) {
+                            // Use the in-place export endpoint to bake in-place into the FBX
+                            console.log(`[HY-Motion] Exporting with in-place: ${fileName}`);
+                            try {
+                                const response = await api.fetchApi("/hymotion/export_inplace", {
+                                    method: "POST",
+                                    body: JSON.stringify({ input_path: filePath })
+                                });
+
+                                if (response.ok) {
+                                    const blob = await response.blob();
+                                    const link = document.createElement('a');
+                                    link.href = URL.createObjectURL(blob);
+                                    link.download = fileName.replace(".fbx", "_inplace.fbx");
+                                    document.body.appendChild(link);
+                                    link.click();
+                                    document.body.removeChild(link);
+                                    URL.revokeObjectURL(link.href);
+                                } else {
+                                    const errData = await response.json();
+                                    console.error("[HY-Motion] In-place export failed:", errData.error);
+                                    alert(`In-place export failed: ${errData.error}\nFalling back to normal download.`);
+                                    // Fallback to normal download
+                                    let fetchUrl = `${window.location.origin}/view?type=${encodeURIComponent(fileType || 'output')}&filename=${encodeURIComponent(fileName)}`;
+                                    if (subfolder) fetchUrl += `&subfolder=${encodeURIComponent(subfolder)}`;
+                                    const link = document.createElement('a');
+                                    link.href = fetchUrl;
+                                    link.download = fileName;
+                                    document.body.appendChild(link);
+                                    link.click();
+                                    document.body.removeChild(link);
+                                }
+                            } catch (e) {
+                                console.error("[HY-Motion] In-place export error:", e);
+                                alert(`In-place export error: ${e.message}`);
+                            }
+                        } else {
+                            // Normal download without in-place
+                            let fetchUrl = `${window.location.origin}/view?type=${encodeURIComponent(fileType || 'output')}&filename=${encodeURIComponent(fileName)}`;
+                            if (subfolder) fetchUrl += `&subfolder=${encodeURIComponent(subfolder)}`;
+
+                            const link = document.createElement('a');
+                            link.href = fetchUrl;
+                            link.download = fileName;
+                            document.body.appendChild(link);
+                            link.click();
+                            document.body.removeChild(link);
+                        }
 
                         // Add a small delay between downloads to prevent browser blocking
                         if (selectedModels.length > 1) {
@@ -1103,6 +1180,23 @@ app.registerExtension({
 
                     // Sync skeleton view with interpolation (if any)
                     updateSkeletons(currentFrame);
+
+                    // FBX In-Place Logic
+                    if (mixers.length > 0) {
+                        for (const m of mixers) {
+                            const modelObj = loadedModels.find(obj => obj.model === m.getRoot());
+                            const activeInPlace = isInPlace || (modelObj && modelObj.isInPlace);
+
+                            if (activeInPlace) {
+                                const root = findRootBone(m.getRoot());
+                                if (root) {
+                                    // Lock horizontal local position to 0
+                                    root.position.x = 0;
+                                    root.position.z = 0;
+                                }
+                            }
+                        }
+                    }
 
                     // Update progress UI (only every ~5 frames to reduce overhead)
                     if (!isScrubbing && Math.floor(currentFrame) % 3 === 0) {
@@ -1249,6 +1343,12 @@ app.registerExtension({
                 loadedModels = [];
                 currentModel = null;
                 bboxCache.clear(); // Clear cache when models are gone
+
+                // Reset maxFrames if no skeletons are present to allow new models to set the duration
+                if (skeletalSamples.length === 0) {
+                    maxFrames = 0;
+                }
+
                 deselectAll();
                 statusLabel.innerText = "Ready";
             };
@@ -1316,7 +1416,7 @@ app.registerExtension({
                         }
                     }
                     masterGroup.add(group);
-                    skeletalSamples.push({ group, joints, bones, keypoints: m.keypoints });
+                    skeletalSamples.push({ group, joints, bones, keypoints: m.keypoints, isInPlace: false });
                     allMaxFrames = Math.max(allMaxFrames, m.keypoints.length);
                 }
                 scene.add(masterGroup);
@@ -1327,8 +1427,8 @@ app.registerExtension({
                 isPlaying = true;
                 playBtn.innerText = "Pause";
                 statusLabel.innerText = `${skeletalSamples.length} Skel${loadedModels.length ? ' + Model' : ''}`;
-                // Only center if we don't have a model yet (model takes priority for centering)
-                if (loadedModels.length === 0) centerCameraOnObject(masterGroup);
+                // Auto-centering disabled as per user request
+                // if (loadedModels.length === 0) centerCameraOnObject(masterGroup);
             };
 
             const updateSkeletons = (frameIdxFloat) => {
@@ -1349,11 +1449,25 @@ app.registerExtension({
                         const p2 = pos2[i];
                         if (p1 && p2) {
                             // Linear interpolation between frames
-                            sample.joints[i].position.set(
-                                p1[0] + (p2[0] - p1[0]) * alpha,
-                                p1[1] + (p2[1] - p1[1]) * alpha,
-                                p1[2] + (p2[2] - p1[2]) * alpha
-                            );
+                            let x = p1[0] + (p2[0] - p1[0]) * alpha;
+                            let y = p1[1] + (p2[1] - p1[1]) * alpha;
+                            let z = p1[2] + (p2[2] - p1[2]) * alpha;
+
+                            if (isInPlace || sample.isInPlace) {
+                                // Subtract root horizontal displacement
+                                // Root is joint 0 in SMPL-H
+                                const root1 = pos1[0];
+                                const root2 = pos2[0];
+                                const rootX = root1[0] + (root2[0] - root1[0]) * alpha;
+                                const rootZ = root1[2] + (root2[2] - root1[2]) * alpha;
+
+                                // We keep the initial root position to avoid jumping
+                                const startRoot = sample.keypoints[0][0];
+                                x -= (rootX - startRoot[0]);
+                                z -= (rootZ - startRoot[2]);
+                            }
+
+                            sample.joints[i].position.set(x, y, z);
                         }
                     }
 
@@ -1373,10 +1487,37 @@ app.registerExtension({
                                 j1p2[1] + (j2p2[1] - j1p2[1]) * alpha,
                                 j1p2[2] + (j2p2[2] - j1p2[2]) * alpha
                             );
+
+                            if (isInPlace || sample.isInPlace) {
+                                const root1 = pos1[0];
+                                const root2 = pos2[0];
+                                const rootX = root1[0] + (root2[0] - root1[0]) * alpha;
+                                const rootZ = root1[2] + (root2[2] - root1[2]) * alpha;
+                                const startRoot = sample.keypoints[0][0];
+
+                                v1.x -= (rootX - startRoot[0]);
+                                v1.z -= (rootZ - startRoot[2]);
+                                v2.x -= (rootX - startRoot[0]);
+                                v2.z -= (rootZ - startRoot[2]);
+                            }
+
                             b.line.geometry.setFromPoints([v1, v2]);
                         }
                     }
                 }
+            };
+
+            const findRootBone = (object) => {
+                if (!object) return null;
+                let root = null;
+                object.traverse((child) => {
+                    if (root) return;
+                    const name = child.name.toLowerCase();
+                    if (name.includes("hips") || name.includes("pelvis") || name.includes("root") || name.includes("center") || name.includes("cog")) {
+                        root = child;
+                    }
+                });
+                return root;
             };
 
             const loadGenericModel = async (modelPath, format, customName = null, index = 0, total = 1) => {
@@ -1482,7 +1623,11 @@ app.registerExtension({
                                 }
                             });
 
-                            scene.add(fbx);
+                            if (scene) {
+                                scene.add(fbx);
+                            } else {
+                                console.warn("[HY-Motion] Scene undefined in loadGenericModel callback, skipping add.");
+                            }
                             currentModel = fbx;
                             loadedModels.push({
                                 model: fbx,
@@ -1493,7 +1638,8 @@ app.registerExtension({
                                 fileType: type,
                                 basePosition: { x: 0, y: 0, z: 0 },
                                 baseRotation: { x: 0, y: 0, z: 0 },
-                                baseScale: { x: 1, y: 1, z: 1 }
+                                baseScale: { x: 1, y: 1, z: 1 },
+                                isInPlace: false
                             });
 
                             // Positioning side-by-side
@@ -1526,10 +1672,10 @@ app.registerExtension({
                                 action.play();
                                 mixers.push(m);
 
-                                // If we don't have skeletal maxFrames, use the animation duration
-                                if (maxFrames === 0) {
-                                    maxFrames = Math.floor(anims[0].duration * targetFPS);
-                                    if (maxFrames === 0) maxFrames = 1; // Fallback
+                                // Update maxFrames if it's the first model in a batch or if the new animation is longer
+                                const animFrames = Math.floor(anims[0].duration * targetFPS);
+                                if (maxFrames === 0 || index === 0 || animFrames > maxFrames) {
+                                    maxFrames = Math.max(animFrames, 1);
                                 }
 
                                 // Only auto-play if it's NOT the standalone 3D Model Loader
@@ -1547,6 +1693,8 @@ app.registerExtension({
                             updateHitProxies();
                             requestRender(); // Trigger render
 
+                            // Auto-centering disabled as per user request
+                            /*
                             if (total > 1) {
                                 // Center on all models
                                 const group = new THREE.Group();
@@ -1555,6 +1703,7 @@ app.registerExtension({
                             } else {
                                 centerCameraOnObject(fbx);
                             }
+                            */
 
                             // Show Transform and Apply buttons for loader
                             if (nodeData.name === "HYMotion3DModelLoader") {
@@ -1637,9 +1786,11 @@ app.registerExtension({
             // Lazy initialization - only init when data is actually loaded
             // This prevents the 4-second freeze on ComfyUI reload
             const ensureInitialized = async () => {
-                if (!isInitialized && !isInitializing) {
-                    await initThree();
-                }
+                if (isInitialized) return;
+                if (isInitializing) return initPromise;
+
+                initPromise = initThree();
+                return initPromise;
             };
 
             // Support live preview on widget change for the loader nodes
@@ -1727,6 +1878,47 @@ app.registerExtension({
             };
             cycleBtn.onclick = (e) => { e.stopPropagation(); cycleSelection(); };
             exportBtn.onclick = (e) => { e.stopPropagation(); exportSelected(); };
+            // Consolidated in-place button: global when no selection, per-selection when selected
+            inPlaceBtn.onclick = (e) => {
+                e.stopPropagation();
+
+                if (selectedModels.length > 0) {
+                    // Per-selection mode: toggle in-place for all selected objects
+                    const newState = !selectedModels[0].obj.isInPlace;
+                    for (const s of selectedModels) {
+                        s.obj.isInPlace = newState;
+                    }
+                    // Update button appearance based on selection state
+                    const allInPlace = selectedModels.every(s => s.obj.isInPlace);
+                    inPlaceBtn.innerText = allInPlace ? "🧍‍♂️" : "🏃‍♂️";
+                    inPlaceBtn.style.background = allInPlace ? "#0066cc" : "#444";
+                    inPlaceBtn.title = `In-Place: ${selectedModels.length} selected (${allInPlace ? 'ON' : 'OFF'})`;
+                } else {
+                    // Global mode: toggle global in-place for all characters
+                    isInPlace = !isInPlace;
+                    inPlaceBtn.innerText = isInPlace ? "🧍‍♂️" : "🏃‍♂️";
+                    inPlaceBtn.style.background = isInPlace ? "#0066cc" : "#444";
+                    inPlaceBtn.title = `Global In-Place: ${isInPlace ? 'ON' : 'OFF'}`;
+                }
+                requestRender();
+            };
+
+            // Legacy handler kept for backwards compatibility but does nothing
+            selectionInPlaceBtn.onclick = (e) => { e.stopPropagation(); };
+            focusBtn.onclick = (e) => {
+                e.stopPropagation();
+                if (selectedModels.length > 0) {
+                    // Focus on the first selected object
+                    const s = selectedModels[0];
+                    centerCameraOnObject(s.type === 'model' ? s.obj.model : s.obj.group);
+                } else if (currentModel) {
+                    centerCameraOnObject(currentModel);
+                } else if (skeletalSamples.length > 0) {
+                    const group = new THREE.Group();
+                    skeletalSamples.forEach(s => group.add(s.group.clone()));
+                    centerCameraOnObject(group);
+                }
+            };
 
             applyBtn.onclick = async (e) => {
                 e.stopPropagation();
@@ -1825,6 +2017,21 @@ app.registerExtension({
                 if (mixers.length > 0) {
                     for (const m of mixers) {
                         m.setTime(frameAccumulator % (maxFrames * frameTime));
+                    }
+
+                    // Apply in-place logic after setting mixer time (same as in animate loop)
+                    for (const m of mixers) {
+                        const modelObj = loadedModels.find(obj => obj.model === m.getRoot());
+                        const activeInPlace = isInPlace || (modelObj && modelObj.isInPlace);
+
+                        if (activeInPlace) {
+                            const root = findRootBone(m.getRoot());
+                            if (root) {
+                                // Lock horizontal local position to 0
+                                root.position.x = 0;
+                                root.position.z = 0;
+                            }
+                        }
                     }
                 }
 

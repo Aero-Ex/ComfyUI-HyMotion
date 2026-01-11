@@ -961,6 +961,10 @@ class HYMotionModularExportFBX:
                     "step": 1,
                     "tooltip": "Which batch sample to use as primary output (for single-file workflows)."
                 }),
+                "in_place": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "If enabled, removes horizontal movement (X/Z) from root so character stays in place."
+                }),
             }
         }
 
@@ -971,7 +975,7 @@ class HYMotionModularExportFBX:
     OUTPUT_NODE = True
 
     def export_fbx(self, motion_data: HYMotionData, template_name: str, fps: float, scale: float, output_dir: str, filename_prefix: str, 
-                   batch_index: int = 0):
+                   batch_index: int = 0, in_place: bool = False):
         # Resolve template path - use dropdown selection or fallback to default
         template_fbx_path = folder_paths.get_full_path("hymotion_fbx_templates", template_name)
             
@@ -1015,6 +1019,16 @@ class HYMotionModularExportFBX:
             try:
                 rot6d = output_dict["rot6d"][batch_idx].clone()
                 transl = output_dict["transl"][batch_idx].clone()
+                
+                # Apply in-place: zero out horizontal translation (X and Z)
+                if in_place:
+                    # Get the initial horizontal position at frame 0
+                    init_x = transl[0, 0].item()
+                    init_z = transl[0, 2].item()
+                    # Lock X and Z to the initial position (effectively zeroing movement)
+                    transl[:, 0] = init_x
+                    transl[:, 2] = init_z
+                    print(f"[HY-Motion] In-place applied: X/Z locked at ({init_x:.3f}, {init_z:.3f})")
                 
                 # Prepare SMPL-H dictionary for converter
                 smpl_data = construct_smpl_data_dict(rot6d, transl)
@@ -1318,6 +1332,10 @@ class HYMotionRetargetFBX:
                     "default": True,
                     "tooltip": "If enabled, adds timestamps to filenames to prevent overwriting. Disable to use fixed names for easier iteration in Godot."
                 }),
+                "in_place": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "If enabled, removes horizontal movement from the animation so the character stays in one spot. Useful for game development."
+                }),
             }
         }
     
@@ -1328,7 +1346,7 @@ class HYMotionRetargetFBX:
     OUTPUT_NODE = True
     
     def retarget(self, motion_data, target_fbx, output_dir="hymotion_retarget", filename_prefix="retarget", 
-                 mapping_file="", yaw_offset=0.0, scale=0.0, neutral_fingers=True, unique_names=True):
+                 mapping_file="", yaw_offset=0.0, scale=0.0, neutral_fingers=True, unique_names=True, in_place=False):
         """Retarget motion to custom FBX skeleton."""
         if not target_fbx:
             raise ValueError("Target FBX file path is empty. Please provide a path to a character FBX.")
@@ -1441,6 +1459,9 @@ class HYMotionRetargetFBX:
                 if not neutral_fingers:
                     cmd.append("--no-neutral")
                 
+                if in_place:
+                    cmd.append("--in-place")
+                
                 # Run retargeting
                 print(f"[HYMotionRetargetFBX] Retargeting batch {batch_idx}/{motion_data.batch_size}...")
                 
@@ -1481,6 +1502,8 @@ class HYMotionRetargetFBX:
             })
             
         return {"ui": {"fbx": fbx_info}, "result": (result, fbx_info)}
+
+
 
 
 class HYMotionSMPLToData:
