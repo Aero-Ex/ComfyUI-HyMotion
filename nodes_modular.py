@@ -373,10 +373,18 @@ def get_gguf_loader():
                 ops_module = importlib.import_module(f"{pkg_name}.ops")
                 dequant_module = importlib.import_module(f"{pkg_name}.dequant")
                 
-                return loader_module.gguf_clip_loader, ops_module.GGMLOps, ops_module.GGMLTensor, dequant_module.dequantize_tensor
+                # Return raw loader and mapping helpers for "True Native" support
+                return (
+                    loader_module.gguf_sd_loader, 
+                    loader_module.LLAMA_SD_MAP, 
+                    loader_module.sd_map_replace,
+                    ops_module.GGMLOps, 
+                    ops_module.GGMLTensor, 
+                    dequant_module.dequantize_tensor
+                )
             except Exception as e:
                 print(f"[HY-Motion] Error importing GGUF: {e}")
-    return None, None, None, None
+    return None, None, None, None, None, None
 
 class HYMotionTextEncoderLoader:
     @classmethod
@@ -429,13 +437,17 @@ class HYMotionTextEncoderLoader:
             if path.endswith(".gguf"):
                 try:
                     # Use helper to get official GGUF backend components
-                    gguf_loader, g_ops, g_tensor, dequant = get_gguf_loader()
-                    if gguf_loader and dequant:
+                    # We use gguf_sd_loader directly to bypass forced dequantization of embeddings
+                    raw_loader, sd_map, map_replace, g_ops, g_tensor, dequant = get_gguf_loader()
+                    if raw_loader and dequant:
                         dequantizer = dequant
                         ggml_ops = g_ops
                         ggml_tensor = g_tensor
-                        print(f"[HY-Motion] Initialized GGUF dequantizer and ops for {os.path.basename(path)}")
-                        return gguf_loader(path)
+                        print(f"[HY-Motion] Initialized True Native GGUF dequantizer and ops for {os.path.basename(path)}")
+                        
+                        # Load raw state dict and apply Llama/Qwen mapping manually
+                        sd = raw_loader(path, is_text_model=True)
+                        return map_replace(sd, sd_map)
                 except Exception as e:
                     print(f"[HY-Motion] GGUF Load failed: {e}")
                     return None

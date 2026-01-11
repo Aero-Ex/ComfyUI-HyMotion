@@ -181,7 +181,9 @@ class HYTextModel(nn.Module):
                 
                 # Dequantize GGUF weights (has tensor_type attribute)
                 if dequantizer and hasattr(weight, "tensor_type") and not is_ggml_layer:
-                    weight = dequantizer(weight)
+                    # Force float32 for dequantized weights on CPU to avoid SDPA dtype mismatches
+                    target_dtype = torch.float32 if target_device.type == "cpu" else None
+                    weight = dequantizer(weight, dtype=target_dtype)
                 
                 # Resolve the target parameter/member and its shape
                 param = getattr(mod, param_name, None)
@@ -231,6 +233,9 @@ class HYTextModel(nn.Module):
                         if is_ggml_layer:
                             setattr(mod, param_name, torch.nn.Parameter(weight, requires_grad=False))
                         else:
+                            # Ensure float32 on CPU for non-GGML layers (Norms, dequantized Embeddings, etc.)
+                            if target_device.type == "cpu" and weight.dtype in [torch.float16, torch.bfloat16]:
+                                weight = weight.to(torch.float32)
                             set_module_tensor_to_device(model, target_key, target_device, value=weight)
                         loaded_count += 1
                     else:
