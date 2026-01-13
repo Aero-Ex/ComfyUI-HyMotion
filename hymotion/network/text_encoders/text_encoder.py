@@ -22,36 +22,58 @@ _base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__fi
 QWEN_PATH = os.path.join(_base_dir, "models_configs", "Qwen3-8B")
 CLIP_PATH = os.path.join(_base_dir, "models_configs", "clip-vit-large-patch14")
 
-class ScaledFP8Linear(nn.Module):
-    """
-    Handles block-wise FP8 scaling during forward pass.
-    Keeps weights in FP8 to save memory.
-    """
-    def __init__(self, weight, scale, bias=None):
-        super().__init__()
-        self.register_buffer("weight", weight.detach())
-        self.register_buffer("scale", scale.detach())
-        if bias is not None:
-            self.register_buffer("bias", bias.detach())
-        else:
-            self.bias = None
+from comfy.quant_ops import QuantizedLayout, QuantizedTensor, register_layout_op, LAYOUTS
+import comfy.ops
 
-    def forward(self, x):
-        # 1. Cast weight to match x dtype for matmul
-        w = self.weight.to(x.dtype)
+class BlockScaledFP8Layout(QuantizedLayout):
+    """
+    Handles block-wise FP8 scaling (e.g. Qwen3 models).
+    Storage format:
+    - qdata: FP8 tensor
+    - scale: Block-wise scale tensor
+    - orig_dtype: Original dtype for dequantization
+    """
+    @classmethod
+    def quantize(cls, tensor, scale=None, dtype=torch.float8_e4m3fn, **kwargs):
+        raise NotImplementedError("BlockScaledFP8Layout only supports loading pre-quantized weights.")
+
+    @staticmethod
+    def dequantize(qdata, scale, orig_dtype, **kwargs):
+        # Efficient block-wise dequantization using broadcasting
+        bh = qdata.shape[0] // scale.shape[0]
+        bw = qdata.shape[1] // scale.shape[1]
         
-        # 2. Apply block-wise scaling (calculate block size dynamically)
-        bh = w.shape[0] // self.scale.shape[0]
-        bw = w.shape[1] // self.scale.shape[1]
-        s = self.scale.repeat_interleave(bh, dim=0).repeat_interleave(bw, dim=1)
+        # Reshape qdata to [num_blocks_h, bh, num_blocks_w, bw]
+        q_reshaped = qdata.view(scale.shape[0], bh, scale.shape[1], bw)
         
-        # Match weight shape exactly in case of non-multiple dimensions
-        if s.shape != w.shape:
-            s = torch.nn.functional.pad(s, (0, w.shape[1]-s.shape[1], 0, w.shape[0]-s.shape[0]), mode='replicate')[:w.shape[0], :w.shape[1]]
-            
-        w = w * s.to(w.dtype)
+        # Multiply by scale [num_blocks_h, 1, num_blocks_w, 1]
+        # Cast to orig_dtype for computation
+        dequantized = q_reshaped.to(orig_dtype) * scale.unsqueeze(1).unsqueeze(3).to(orig_dtype)
         
-        return torch.nn.functional.linear(x, w, self.bias)
+        return dequantized.reshape(qdata.shape)
+
+    @classmethod
+    def get_plain_tensors(cls, qtensor):
+        return qtensor._qdata, qtensor._layout_params['scale']
+
+# Register linear op for BlockScaledFP8Layout
+@register_layout_op(torch.ops.aten.linear.default, "BlockScaledFP8Layout")
+def block_fp8_linear(func, args, kwargs):
+    input_tensor = args[0]
+    weight = args[1]
+    bias = args[2] if len(args) > 2 else None
+
+    # Fallback to dequantization for now (CPU/Non-TensorCore)
+    # If we want to support _scaled_mm, we'd need to handle block-wise scales which is complex
+    if isinstance(weight, QuantizedTensor):
+        weight = weight.dequantize()
+    if isinstance(input_tensor, QuantizedTensor):
+        input_tensor = input_tensor.dequantize()
+
+    return torch.nn.functional.linear(input_tensor, weight, bias)
+
+# Register the layout
+LAYOUTS["BlockScaledFP8Layout"] = BlockScaledFP8Layout
 
 class HYTextModel(nn.Module):
     def __init__(
@@ -71,12 +93,17 @@ class HYTextModel(nn.Module):
         self.crop_start = 0
         self.ggml_ops = ggml_ops
         self.ggml_tensor = ggml_tensor
+        
+        # Use ComfyUI ops for patching
+        self.ops = comfy.ops.disable_weight_init
 
         # Initialize Tokenizers
+        print(f"[HYTextModel] Initializing tokenizers from {CLIP_PATH} and {QWEN_PATH}...")
         self.sentence_emb_tokenizer = CLIPTokenizer.from_pretrained(CLIP_PATH, local_files_only=True)
         self.llm_tokenizer = AutoTokenizer.from_pretrained(QWEN_PATH, local_files_only=True)
 
         # Build Model Structures (Empty weights to save RAM)
+        print("[HYTextModel] Building model structures with accelerate.init_empty_weights()...")
         from accelerate import init_empty_weights
         with init_empty_weights():
             clip_config = AutoConfig.from_pretrained(CLIP_PATH, local_files_only=True)
@@ -86,10 +113,11 @@ class HYTextModel(nn.Module):
             llm_config = AutoConfig.from_pretrained(QWEN_PATH, local_files_only=True)
             self.llm_text_encoder = AutoModelForCausalLM.from_config(llm_config)
 
-        # Patch models to use GGML layers if ops are provided
-        if self.ggml_ops:
-            self._patch_model_to_ggml(self.sentence_emb_text_encoder, self.ggml_ops)
-            self._patch_model_to_ggml(self.llm_text_encoder, self.ggml_ops)
+            # Patch models to use ComfyUI ops or GGML ops
+            print(f"[HYTextModel] Patching models with {'GGML' if self.ggml_ops else 'ComfyUI'} ops...")
+            patch_ops = self.ggml_ops if self.ggml_ops else self.ops
+            self._patch_model_to_ops(self.sentence_emb_text_encoder, patch_ops)
+            self._patch_model_to_ops(self.llm_text_encoder, patch_ops)
 
         # Load Weights
         if active_clip_sd:
@@ -104,23 +132,54 @@ class HYTextModel(nn.Module):
         self.ctxt_dim = self.llm_text_encoder.config.hidden_size
         self.crop_start = self._compute_crop_start()
         self.max_length_llm = self._orig_max_length_llm + self.crop_start
+        
+        # Caching mechanism
+        self._cache = {}
+        self._cache_max_size = kwargs.get("cache_max_size", 16)
+        
         print(f"[HYTextModel] CLIP initialized: hidden_size={self.vtxt_dim}")
         print(f"[HYTextModel] LLM initialized: hidden_size={self.ctxt_dim}, crop_start={self.crop_start}")
 
-    def _patch_model_to_ggml(self, model, ggml_ops):
-        """Replaces Linear and Embedding layers with GGUF-aware equivalents."""
+    def _patch_model_to_ops(self, model, ops):
+        """Replaces layers with ComfyUI-aware equivalents."""
+        to_replace = []
         for name, module in model.named_modules():
-            if hasattr(module, "weight"):
-                new_layer = None
-                if isinstance(module, torch.nn.Linear):
-                    new_layer = ggml_ops.Linear(module.in_features, module.out_features, bias=module.bias is not None)
-                elif isinstance(module, torch.nn.Embedding):
-                    new_layer = ggml_ops.Embedding(module.num_embeddings, module.embedding_dim)
-                
-                if new_layer:
-                    parent_name, child_name = name.rsplit(".", 1) if "." in name else ("", name)
-                    parent = model.get_submodule(parent_name) if parent_name else model
-                    setattr(parent, child_name, new_layer)
+            new_layer = None
+            if isinstance(module, torch.nn.Linear):
+                if hasattr(ops, "Linear"):
+                    new_layer = ops.Linear(module.in_features, module.out_features, bias=module.bias is not None)
+            elif isinstance(module, torch.nn.Embedding):
+                if hasattr(ops, "Embedding"):
+                    new_layer = ops.Embedding(module.num_embeddings, module.embedding_dim)
+            elif isinstance(module, torch.nn.LayerNorm):
+                if hasattr(ops, "LayerNorm"):
+                    new_layer = ops.LayerNorm(module.normalized_shape, eps=module.eps, elementwise_affine=module.elementwise_affine)
+            elif isinstance(module, torch.nn.GroupNorm):
+                if hasattr(ops, "GroupNorm"):
+                    new_layer = ops.GroupNorm(module.num_groups, module.num_channels, eps=module.eps, affine=module.affine)
+            elif "RMSNorm" in module.__class__.__name__:
+                # Handle various RMSNorm implementations (transformers, custom, etc.)
+                if hasattr(ops, "RMSNorm"):
+                    # Safely get hidden size from weight or normalized_shape
+                    hidden_size = None
+                    if hasattr(module, "weight") and module.weight is not None:
+                        hidden_size = module.weight.shape[0]
+                    elif hasattr(module, "normalized_shape"):
+                        hidden_size = module.normalized_shape[0]
+                    
+                    if hidden_size is not None:
+                        new_layer = ops.RMSNorm(hidden_size, eps=getattr(module, "variance_epsilon", getattr(module, "eps", 1e-6)))
+            
+            if new_layer:
+                to_replace.append((name, new_layer))
+
+        for name, new_layer in to_replace:
+            parent_name, child_name = name.rsplit(".", 1) if "." in name else ("", name)
+            try:
+                parent = model.get_submodule(parent_name) if parent_name else model
+                setattr(parent, child_name, new_layer)
+            except Exception as e:
+                print(f"[HYTextModel] Failed to patch {name}: {e}")
 
     def _get_module_and_param_name(self, model, key):
         if "." not in key: return model, key
@@ -149,6 +208,7 @@ class HYTextModel(nn.Module):
                 # Map the base key to its scale
                 base_k = k.rsplit(".", 1)[0]
                 scales[base_k] = filtered_sd.pop(k)
+        print(f"[HYTextModel] Found {len(scales)} scale tensors.")
 
         loaded_count = 0
         missing_keys = []
@@ -189,31 +249,20 @@ class HYTextModel(nn.Module):
                 param = getattr(mod, param_name, None)
                 expected_shape = param.shape if param is not None else getattr(mod, "tensor_shape", None)
                 
-                # Convert FP8 safetensor weights using ScaledFP8Linear if scales exist
+                # Convert FP8 weights using QuantizedTensor if scales exist
                 is_fp8 = hasattr(weight, "dtype") and str(weight.dtype) == "torch.float8_e4m3fn"
                 if is_fp8:
                     base_path = key.rsplit(".", 1)[0]
                     scale = scales.get(base_path, None)
                     
                     if scale is not None:
-                        # Patch standard Linear with ScaledFP8Linear
-                        if isinstance(mod, nn.Linear):
-                            mod_path = target_key.rsplit(".", 1)[0]
-                            if "." in mod_path:
-                                parent_path, child_name = mod_path.rsplit(".", 1)
-                                parent = model.get_submodule(parent_path)
-                            else:
-                                parent = model
-                                child_name = mod_path
-                            
-                            new_mod = ScaledFP8Linear(weight, scale, bias=mod.bias)
-                            setattr(parent, child_name, new_mod)
-                            loaded_count += 2 # Count weight + scale
-                            continue
-                        else:
-                            # Fallback if not linear (e.g. embedding with unexpected scale)
-                            weight = weight.to(torch.bfloat16) * scale.to(torch.bfloat16)
-                            loaded_count += 1
+                        # Wrap in QuantizedTensor with BlockScaledFP8Layout
+                        layout_params = {
+                            'scale': scale,
+                            'orig_dtype': torch.bfloat16 if target_device.type != "cpu" else torch.float32
+                        }
+                        weight = QuantizedTensor(weight, "BlockScaledFP8Layout", layout_params)
+                        loaded_count += 2 # Count weight + scale
                 
                 # Refined backup shape detection for GGMLLayers
                 if expected_shape is None:
@@ -305,10 +354,17 @@ class HYTextModel(nn.Module):
 
     def encode_llm(self, text: List[str]) -> Tuple[Tensor, Tensor]:
         """Encodes text using the LLM text encoder."""
+        import time
+        t_start = time.time()
         device = get_module_device(self.llm_text_encoder)
         target_device = get_module_device(self)
         
-        print(f"[HYTextModel] LLM Encoding {len(text)} prompt(s)...")
+        # Check cache for single prompt (common case in ComfyUI)
+        if len(text) == 1 and f"llm_{text[0]}" in self._cache:
+            return self._cache[f"llm_{text[0]}"]
+
+        print(f"[HYTextModel] LLM Encoding {len(text)} prompt(s) on {device}...")
+        t_template_start = time.time()
         try:
             llm_text = [self.llm_tokenizer.apply_chat_template(
                 [{"role": "system", "content": PROMPT_TEMPLATE_ENCODE_HUMAN_MOTION}, {"role": "user", "content": t}],
@@ -316,15 +372,22 @@ class HYTextModel(nn.Module):
             ) for t in text]
         except Exception:
             llm_text = [f"<|im_start|>system\n{PROMPT_TEMPLATE_ENCODE_HUMAN_MOTION}<|im_end|>\n<|im_start|>user\n{t}<|im_end|>\n<|im_start|>assistant\n" for t in text]
+        t_template_end = time.time()
         
+        t_tokenize_start = time.time()
         enc = self.llm_tokenizer(
-            llm_text, truncation=True, padding="max_length" if self.enable_llm_padding else False,
+            llm_text, truncation=True, padding="max_length" if self.enable_llm_padding else "longest",
             max_length=self.max_length_llm, return_tensors="pt"
         ).to(device)
+        t_tokenize_end = time.time()
 
+        t_forward_start = time.time()
         with torch.no_grad():
             out = self.llm_text_encoder(**enc, output_hidden_states=True, return_dict=True)
+        if device.type == "cuda": torch.cuda.synchronize()
+        t_forward_end = time.time()
         
+        t_post_start = time.time()
         ctxt_raw = out.hidden_states[-1] if hasattr(out, "hidden_states") else out.last_hidden_state
         if ctxt_raw.device != target_device: ctxt_raw = ctxt_raw.to(target_device)
 
@@ -335,11 +398,26 @@ class HYTextModel(nn.Module):
         c_mean = ctxt_raw.mean().item()
         c_std = ctxt_raw.std().item()
         c_rms = ctxt_raw.pow(2).mean().sqrt().item()
+        t_post_end = time.time()
+        
         print(f"[HYTextModel] LLM stats: mean={c_mean:.4f}, std={c_std:.4f}, rms={c_rms:.4f}")
+        print(f"[HYTextModel] LLM Timing: Template={t_template_end-t_template_start:.3f}s, Tokenize={t_tokenize_end-t_tokenize_start:.3f}s, Forward={t_forward_end-t_forward_start:.3f}s, Post={t_post_end-t_post_start:.3f}s, Total={time.time()-t_start:.3f}s")
+        
+        # Cache result if single prompt
+        if len(text) == 1:
+            if len(self._cache) >= self._cache_max_size:
+                self._cache.pop(next(iter(self._cache)))
+            self._cache[f"llm_{text[0]}"] = (ctxt_raw, ctxt_length)
+            
         return ctxt_raw, ctxt_length
 
     def encode_sentence_emb(self, text: List[str]) -> Tensor:
         device = get_module_device(self.sentence_emb_text_encoder)
+        
+        # Check cache
+        if len(text) == 1 and f"clip_{text[0]}" in self._cache:
+            return self._cache[f"clip_{text[0]}"]
+
         enc = self.sentence_emb_tokenizer(text, truncation=True, padding=True, max_length=77, return_tensors="pt").to(device)
         with torch.no_grad():
             out = self.sentence_emb_text_encoder(**enc)
@@ -350,6 +428,11 @@ class HYTextModel(nn.Module):
         v_std = v_emb.std().item()
         v_rms = v_emb.pow(2).mean().sqrt().item()
         print(f"[HYTextModel] CLIP stats: mean={v_mean:.4f}, std={v_std:.4f}, rms={v_rms:.4f}")
+        
+        # Cache result
+        if len(text) == 1:
+            self._cache[f"clip_{text[0]}"] = v_emb
+            
         return v_emb
 
     def _encode_pooling(self, mask: Tensor, tokens: Tensor) -> Tensor:

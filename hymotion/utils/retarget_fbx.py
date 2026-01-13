@@ -1176,7 +1176,7 @@ def retarget_animation(src_skel: Skeleton, tgt_skel: Skeleton, mapping: dict[str
     if fuzzy_matches:
         print(f"  Fuzzy matched: {len(fuzzy_matches)} bones")
         for s_name, t_name, conf in fuzzy_matches:
-            print(f"    {s_name} → {t_name} (confidence: {conf:.2f})")
+            print(f"    {s_name} -> {t_name} (confidence: {conf:.2f})")
             
     print(f"DEBUG: Final Mapping Count: {len(active)} bones")
     # Sort for cleaner debug output

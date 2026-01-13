@@ -40,6 +40,12 @@ app.registerExtension({
             canvasContainer.style.cssText = "flex:1; width:100%; height:100%; min-height:0; overflow:hidden; position:relative;";
             container.appendChild(canvasContainer);
 
+            // Drop Overlay for file uploads
+            const dropOverlay = document.createElement("div");
+            dropOverlay.style.cssText = "position:absolute; top:0; left:0; width:100%; height:100%; background:rgba(0,123,255,0.3); border:3px dashed #007bff; display:none; align-items:center; justify-content:center; z-index:5000; pointer-events:none; box-sizing:border-box;";
+            dropOverlay.innerHTML = '<div style="background:rgba(0,0,0,0.7); padding:15px 25px; border-radius:10px; color:#fff; font-weight:bold; font-size:18px; pointer-events:none;">Drop 3D Model to Upload</div>';
+            container.appendChild(dropOverlay);
+
             // Add custom slider styles
             const style = document.createElement("style");
             style.textContent = `
@@ -186,6 +192,80 @@ app.registerExtension({
             controls.appendChild(progress);
             controls.appendChild(statusLabel);
             container.appendChild(controls);
+
+            // Drag and Drop Handlers
+            if (nodeData.name === "HYMotion3DModelLoader") {
+                container.addEventListener("dragover", (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    dropOverlay.style.display = "flex";
+                });
+
+                container.addEventListener("dragleave", (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    dropOverlay.style.display = "none";
+                });
+
+                container.addEventListener("drop", async (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    dropOverlay.style.display = "none";
+
+                    const files = e.dataTransfer.files;
+                    if (files.length > 0) {
+                        const file = files[0];
+                        const ext = file.name.split('.').pop().toLowerCase();
+                        const allowed = ["fbx", "glb", "gltf", "obj"];
+
+                        if (!allowed.includes(ext)) {
+                            statusLabel.innerText = "Error: Invalid file type";
+                            return;
+                        }
+
+                        statusLabel.innerText = "Uploading...";
+                        try {
+                            const formData = new FormData();
+                            formData.append("image", file);
+                            formData.append("overwrite", "true");
+                            formData.append("type", "input");
+
+                            const response = await api.fetchApi("/upload/image", {
+                                method: "POST",
+                                body: formData
+                            });
+
+                            if (response.status === 200 || response.status === 201) {
+                                const data = await response.json();
+                                const serverPath = `input/${data.name || data.filename || file.name}`;
+
+                                // Update widget
+                                const widget = node.widgets.find(w => w.name === "model_path");
+                                if (widget) {
+                                    // Add to options if not present
+                                    if (!widget.options.values.includes(serverPath)) {
+                                        widget.options.values.push(serverPath);
+                                        widget.options.values.sort();
+                                    }
+                                    widget.value = serverPath;
+                                }
+
+                                statusLabel.innerText = "Uploaded: " + file.name;
+
+                                // Trigger immediate load
+                                if (isInitialized) {
+                                    handleData({ model_url: serverPath, format: ext });
+                                }
+                            } else {
+                                statusLabel.innerText = "Upload failed";
+                            }
+                        } catch (err) {
+                            console.error("[HY-Motion] Upload Error:", err);
+                            statusLabel.innerText = "Upload Error";
+                        }
+                    }
+                });
+            }
 
             // Transform Overlay Panel
             const transformPanel = document.createElement("div");

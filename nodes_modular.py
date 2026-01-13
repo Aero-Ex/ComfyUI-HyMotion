@@ -951,10 +951,10 @@ class HYMotionModularExportFBX:
                 }),
                 "scale": ("FLOAT", {
                     "default": 100.0, 
-                    "min": 0.01, 
+                    "min": 0.00, 
                     "max": 1000.0, 
                     "step": 0.01,
-                    "tooltip": "Scale factor for FBX export. Use 100.0 for cm (Blender/Maya), 1.0 for meters (Unity)."
+                    "tooltip": "Scale factor for FBX export. Use 100.0 for cm (Blender/Maya), 1.0 for meters (Unity), 0.0 for zero translation."
                 }),
                 "output_dir": ("STRING", {
                     "default": "hymotion_fbx",
