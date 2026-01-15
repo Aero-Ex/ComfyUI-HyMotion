@@ -22,7 +22,7 @@ _base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__fi
 QWEN_PATH = os.path.join(_base_dir, "models_configs", "Qwen3-8B")
 CLIP_PATH = os.path.join(_base_dir, "models_configs", "clip-vit-large-patch14")
 
-from comfy.quant_ops import QuantizedLayout, QuantizedTensor, register_layout_op, LAYOUTS
+from comfy.quant_ops import QuantizedLayout, QuantizedTensor, register_layout_op, register_layout_class
 import comfy.ops
 
 class BlockScaledFP8Layout(QuantizedLayout):
@@ -63,8 +63,7 @@ def block_fp8_linear(func, args, kwargs):
     weight = args[1]
     bias = args[2] if len(args) > 2 else None
 
-    # Fallback to dequantization for now (CPU/Non-TensorCore)
-    # If we want to support _scaled_mm, we'd need to handle block-wise scales which is complex
+    # Fallback to dequantization (CPU/Non-TensorCore)
     if isinstance(weight, QuantizedTensor):
         weight = weight.dequantize()
     if isinstance(input_tensor, QuantizedTensor):
