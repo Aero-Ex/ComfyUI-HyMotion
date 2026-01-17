@@ -53,6 +53,22 @@ class BlockScaledFP8Layout(QuantizedLayout):
                 orig_dtype=self.orig_dtype,
                 orig_shape=self.orig_shape
             )
+
+        def to_device(self, device):
+            """Move params to device - required by comfy_kitchen QuantizedTensor"""
+            return BlockScaledFP8Layout.Params(
+                scale=self.scale.to(device) if isinstance(self.scale, torch.Tensor) else self.scale,
+                orig_dtype=self.orig_dtype,
+                orig_shape=self.orig_shape
+            )
+
+        def to_dtype(self, dtype):
+            """Change params dtype - required by comfy_kitchen QuantizedTensor"""
+            return BlockScaledFP8Layout.Params(
+                scale=self.scale.to(dtype) if isinstance(self.scale, torch.Tensor) else self.scale,
+                orig_dtype=dtype,
+                orig_shape=self.orig_shape
+            )
     
     @classmethod
     def quantize(cls, tensor, scale=None, dtype=torch.float8_e4m3fn, **kwargs):
