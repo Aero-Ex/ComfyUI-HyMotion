@@ -1,0 +1,160 @@
+{
+    "bones": {
+        "Pelvis": [
+            "bone_0"
+        ],
+        "L_Hip": [
+            "bone_44"
+        ],
+        "L_Knee": [
+            "bone_45"
+        ],
+        "L_Ankle": [
+            "bone_46"
+        ],
+        "L_Foot": [
+            "bone_47"
+        ],
+        "R_Hip": [
+            "bone_48"
+        ],
+        "R_Knee": [
+            "bone_49"
+        ],
+        "R_Ankle": [
+            "bone_50"
+        ],
+        "R_Foot": [
+            "bone_51"
+        ],
+        "Spine1": [
+            "bone_1"
+        ],
+        "Spine2": [
+            "bone_2"
+        ],
+        "Spine3": [
+            "bone_3"
+        ],
+        "Neck": [
+            "bone_4"
+        ],
+        "Head": [
+            "bone_5"
+        ],
+        "L_Collar": [
+            "bone_6"
+        ],
+        "L_Shoulder": [
+            "bone_7"
+        ],
+        "L_Elbow": [
+            "bone_8"
+        ],
+        "L_Wrist": [
+            "bone_9"
+        ],
+        "L_Index1": [
+            "bone_13"
+        ],
+        "L_Index2": [
+            "bone_14"
+        ],
+        "L_Index3": [
+            "bone_15"
+        ],
+        "L_Middle1": [
+            "bone_16"
+        ],
+        "L_Middle2": [
+            "bone_17"
+        ],
+        "L_Middle3": [
+            "bone_18"
+        ],
+        "L_Ring1": [
+            "bone_19"
+        ],
+        "L_Ring2": [
+            "bone_20"
+        ],
+        "L_Ring3": [
+            "bone_21"
+        ],
+        "L_Pinky1": [
+            "bone_22"
+        ],
+        "L_Pinky2": [
+            "bone_23"
+        ],
+        "L_Pinky3": [
+            "bone_24"
+        ],
+        "L_Thumb1": [
+            "bone_10"
+        ],
+        "L_Thumb2": [
+            "bone_11"
+        ],
+        "L_Thumb3": [
+            "bone_12"
+        ],
+        "R_Collar": [
+            "bone_25"
+        ],
+        "R_Shoulder": [
+            "bone_26"
+        ],
+        "R_Elbow": [
+            "bone_27"
+        ],
+        "R_Wrist": [
+            "bone_28"
+        ],
+        "R_Index1": [
+            "bone_32"
+        ],
+        "R_Index2": [
+            "bone_33"
+        ],
+        "R_Index3": [
+            "bone_34"
+        ],
+        "R_Middle1": [
+            "bone_35"
+        ],
+        "R_Middle2": [
+            "bone_36"
+        ],
+        "R_Middle3": [
+            "bone_37"
+        ],
+        "R_Ring1": [
+            "bone_38"
+        ],
+        "R_Ring2": [
+            "bone_39"
+        ],
+        "R_Ring3": [
+            "bone_40"
+        ],
+        "R_Pinky1": [
+            "bone_41"
+        ],
+        "R_Pinky2": [
+            "bone_42"
+        ],
+        "R_Pinky3": [
+            "bone_43"
+        ],
+        "R_Thumb1": [
+            "bone_29"
+        ],
+        "R_Thumb2": [
+            "bone_30"
+        ],
+        "R_Thumb3": [
+            "bone_31"
+        ]
+    }
+}

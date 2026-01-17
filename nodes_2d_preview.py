@@ -35,6 +35,29 @@ class HYMotionPreview2D:
     CATEGORY = "HY-Motion/view"
 
     def render_preview(self, width, height, up_axis, batch_index, frame_index, frame_skip, keep_duration, max_frames, draw_skeleton, elevation, azimuth, scale, motion_data=None, npz_path=""):
+        def safe_float(v, default):
+            try:
+                if v is None or v == "": return default
+                return float(v)
+            except: return default
+        
+        def safe_int(v, default):
+            try:
+                if v is None or v == "": return default
+                return int(float(v))
+            except: return default
+
+        elevation = safe_int(elevation, 20)
+        azimuth = safe_int(azimuth, 1)
+        scale = safe_float(scale, 0.5)
+        
+        width = safe_int(width, 512)
+        height = safe_int(height, 512)
+        batch_index = safe_int(batch_index, 0)
+        frame_index = safe_int(frame_index, 0)
+        frame_skip = safe_int(frame_skip, 1)
+        max_frames = safe_int(max_frames, 100)
+
         keypoints = None
         
         # 1. Try loading from motion_data

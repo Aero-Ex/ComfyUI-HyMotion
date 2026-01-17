@@ -160,15 +160,15 @@ class HYMotion3DModelLoader:
                     "default": files[0],
                     "tooltip": "Select a 3D model to view immediately"
                 }),
-                "translate_x": ("FLOAT", {"default": 0.0, "step": 0.01}),
-                "translate_y": ("FLOAT", {"default": 0.0, "step": 0.01}),
-                "translate_z": ("FLOAT", {"default": 0.0, "step": 0.01}),
-                "rotate_x": ("FLOAT", {"default": 0.0, "step": 0.1}),
-                "rotate_y": ("FLOAT", {"default": 0.0, "step": 0.1}),
-                "rotate_z": ("FLOAT", {"default": 0.0, "step": 0.1}),
-                "scale_x": ("FLOAT", {"default": 1.0, "step": 0.01}),
-                "scale_y": ("FLOAT", {"default": 1.0, "step": 0.01}),
-                "scale_z": ("FLOAT", {"default": 1.0, "step": 0.01}),
+                "translate_x": ("FLOAT", {"default": 0.0, "min": -1000.0, "max": 1000.0, "step": 0.01}),
+                "translate_y": ("FLOAT", {"default": 0.0, "min": -1000.0, "max": 1000.0, "step": 0.01}),
+                "translate_z": ("FLOAT", {"default": 0.0, "min": -1000.0, "max": 1000.0, "step": 0.01}),
+                "rotate_x": ("FLOAT", {"default": 0.0, "min": -360.0, "max": 360.0, "step": 0.1}),
+                "rotate_y": ("FLOAT", {"default": 0.0, "min": -360.0, "max": 360.0, "step": 0.1}),
+                "rotate_z": ("FLOAT", {"default": 0.0, "min": -360.0, "max": 360.0, "step": 0.1}),
+                "scale_x": ("FLOAT", {"default": 1.0, "min": 0.001, "max": 1000.0, "step": 0.01}),
+                "scale_y": ("FLOAT", {"default": 1.0, "min": 0.001, "max": 1000.0, "step": 0.01}),
+                "scale_z": ("FLOAT", {"default": 1.0, "min": 0.001, "max": 1000.0, "step": 0.01}),
             }
         }
 
@@ -178,7 +178,23 @@ class HYMotion3DModelLoader:
     CATEGORY = "HY-Motion/view"
     OUTPUT_NODE = True
 
-    def load_model(self, model_path, translate_x=0, translate_y=0, translate_z=0, rotate_x=0, rotate_y=0, rotate_z=0, scale_x=1, scale_y=1, scale_z=1):
+    def load_model(self, model_path, translate_x=0.0, translate_y=0.0, translate_z=0.0, rotate_x=0.0, rotate_y=0.0, rotate_z=0.0, scale_x=1.0, scale_y=1.0, scale_z=1.0):
+        def safe_float(v, default):
+            try:
+                if v is None or v == "": return default
+                return float(v)
+            except: return default
+
+        tx = safe_float(translate_x, 0.0)
+        ty = safe_float(translate_y, 0.0)
+        tz = safe_float(translate_z, 0.0)
+        rx = safe_float(rotate_x, 0.0)
+        ry = safe_float(rotate_y, 0.0)
+        rz = safe_float(rotate_z, 0.0)
+        sx = safe_float(scale_x, 1.0)
+        sy = safe_float(scale_y, 1.0)
+        sz = safe_float(scale_z, 1.0)
+
         if model_path == "none":
             return (None,)
         
@@ -188,9 +204,9 @@ class HYMotion3DModelLoader:
                 "model_url": model_path, 
                 "format": ext,
                 "transform": {
-                    "translate": [translate_x, translate_y, translate_z],
-                    "rotate": [rotate_x, rotate_y, rotate_z],
-                    "scale": [scale_x, scale_y, scale_z]
+                    "translate": [tx, ty, tz],
+                    "rotate": [rx, ry, rz],
+                    "scale": [sx, sy, sz]
                 }
             }, 
             "result": (model_path,)

@@ -446,7 +446,12 @@ class HYMotionTextEncoderLoader:
                         print(f"[HY-Motion] Initialized True Native GGUF dequantizer and ops for {os.path.basename(path)}")
                         
                         # Load raw state dict and apply Llama/Qwen mapping manually
-                        sd = raw_loader(path, is_text_model=True)
+                        # NOTE: gguf_sd_loader may return (state_dict, metadata) tuple nowadays
+                        sd_result = raw_loader(path, is_text_model=True)
+                        if isinstance(sd_result, tuple):
+                            sd = sd_result[0]  # Extract state dict from tuple
+                        else:
+                            sd = sd_result
                         return map_replace(sd, sd_map)
                 except Exception as e:
                     print(f"[HY-Motion] GGUF Load failed: {e}")
@@ -482,7 +487,28 @@ class HYMotionTextEncoderLoader:
         gc.collect()
         
         print(f"[HY-Motion] Text Encoder loaded successfully on {device}")
-        return (text_model.to(device),)
+        
+        # Safely move model to device, handling meta tensors from failed weight loading
+        target_device = torch.device(device)
+        try:
+            # Check if any parameters are still on meta device (indicates failed weight loading)
+            has_meta_tensors = any(p.device.type == "meta" for p in text_model.parameters())
+            if has_meta_tensors:
+                print(f"[HY-Motion] WARNING: Some parameters are still meta tensors. Using to_empty() for safe device transfer.")
+                # Use to_empty for meta tensors, then try to initialize with zeros
+                text_model = text_model.to_empty(device=target_device)
+                # Zero-initialize any remaining uninitialized parameters
+                for name, param in text_model.named_parameters():
+                    if param.data.storage().size() == 0:  # Unallocated storage
+                        param.data = torch.zeros(param.shape, device=target_device, dtype=param.dtype)
+            else:
+                text_model = text_model.to(target_device)
+        except Exception as e:
+            print(f"[HY-Motion] WARNING: Failed to move model to {device}: {e}")
+            print(f"[HY-Motion] Attempting to_empty() fallback...")
+            text_model = text_model.to_empty(device=target_device)
+        
+        return (text_model,)
 
 
 # ============================================================================
@@ -643,6 +669,20 @@ class HYMotionSampler:
                sampler_method: str = "dopri5", atol: float = 1e-4, rtol: float = 1e-4,
                align_ground: bool = True, ground_offset: float = 0.0,
                skip_smoothing: bool = False, body_chunk_size: int = 64):
+        
+        def safe_float(v, default):
+            try:
+                if v is None or v == "": return default
+                return float(v)
+            except: return default
+
+        duration = safe_float(duration, 3.0)
+        cfg_scale = safe_float(cfg_scale, 5.0)
+        special_game_prob = safe_float(special_game_prob, 1.0)
+        atol = safe_float(atol, 1e-4)
+        rtol = safe_float(rtol, 1e-4)
+        ground_offset = safe_float(ground_offset, 0.0)
+
         print(f"[HY-Motion] DEBUG: num_samples received = {num_samples}")
         print(f"[HY-Motion] Generating {duration}s motion with {num_samples} sample(s)")
         
@@ -1538,6 +1578,14 @@ class HYMotionSMPLToData:
     CATEGORY = "HY-Motion/utils"
 
     def convert(self, smpl_params, text="", duration=0.0):
+        def safe_float(v, default):
+            try:
+                if v is None or v == "": return default
+                return float(v)
+            except: return default
+        
+        duration = safe_float(duration, 0.0)
+
         # Handle list of params if batched
         if isinstance(smpl_params, list):
             params = smpl_params[0]
