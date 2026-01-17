@@ -21,6 +21,7 @@ from .hymotion.pipeline.motion_diffusion import length_to_mask, randn_tensor, Mo
 from .hymotion.utils.geometry import rot6d_to_rotation_matrix, rotation_matrix_to_rot6d, axis_angle_to_matrix
 from .hymotion.pipeline.body_model import WoodenMesh, construct_smpl_data_dict
 from .hymotion.utils.downloader import download_file, get_model_path, MODEL_METADATA
+from .nodes_3d_viewer import HYMotionFBXPlayer, HYMotion3DModelLoader
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 if CURRENT_DIR not in sys.path:
@@ -1812,7 +1813,12 @@ NODE_CLASS_MAPPINGS_MODULAR = {
     "HYMotionTextEncode": HYMotionTextEncode,
     "HYMotionSampler": HYMotionSampler,
     "HYMotionModularExportFBX": HYMotionModularExportFBX,
+    "HYMotionPromptRewrite": HYMotionPromptRewrite,
+    "HYMotionSaveNPZ": HYMotionSaveNPZ,
+    "HYMotionRetargetFBX": HYMotionRetargetFBX,
+    "HYMotionSMPLToData": HYMotionSMPLToData,
     "HYMotionFBXPlayer": HYMotionFBXPlayer,
+    "HYMotion3DModelLoader": HYMotion3DModelLoader,
     "HYMotionModelDownloader": HYMotionModelDownloader,
 }
 
@@ -1822,6 +1828,11 @@ NODE_DISPLAY_NAME_MAPPINGS_MODULAR = {
     "HYMotionTextEncode": "HY-Motion Text Encode",
     "HYMotionSampler": "HY-Motion Sampler",
     "HYMotionModularExportFBX": "HY-Motion Export FBX",
+    "HYMotionPromptRewrite": "HY-Motion Prompt Rewrite",
+    "HYMotionSaveNPZ": "HY-Motion Save NPZ",
+    "HYMotionRetargetFBX": "HY-Motion Retarget to FBX",
+    "HYMotionSMPLToData": "HY-Motion SMPL to Data",
     "HYMotionFBXPlayer": "HY-Motion FBX Player",
+    "HYMotion3DModelLoader": "HY-Motion 3D Model Loader",
     "HYMotionModelDownloader": "HY-Motion Model Downloader",
 }
