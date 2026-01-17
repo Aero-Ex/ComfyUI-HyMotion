@@ -1778,12 +1778,15 @@ class HYMotionSMPLToData:
 
         print(f"[HY-Motion] Successfully converted {num_frames} frames ({num_joints} joints) from SMPL to HY-Motion format (Batch: {batch_size}).")
         return (motion_data,)
+from .hymotion.utils.downloader import download_file, get_model_path, MODEL_METADATA, download_models_parallel
+
 class HYMotionModelDownloader:
     @classmethod
     def INPUT_TYPES(s):
         return {
             "required": {
-                "model_choice": (list(MODEL_METADATA.keys()),),
+                "model_choices": (list(MODEL_METADATA.keys()), {"default": list(MODEL_METADATA.keys())[0], "multiselect": True}),
+                "download_all": ("BOOLEAN", {"default": False}),
             },
             "optional": {
                 "custom_path": ("STRING", {"default": ""}),
@@ -1791,21 +1794,29 @@ class HYMotionModelDownloader:
         }
 
     RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("model_path",)
+    RETURN_NAMES = ("model_paths",)
     FUNCTION = "download"
     CATEGORY = "HY-Motion"
 
-    def download(self, model_choice, custom_path=""):
-        dest_path = get_model_path(model_choice, custom_path)
+    def download(self, model_choices, download_all=False, custom_path=""):
+        if download_all:
+            selected_models = list(MODEL_METADATA.keys())
+        else:
+            if isinstance(model_choices, str):
+                selected_models = [model_choices]
+            else:
+                selected_models = model_choices
         
-        if os.path.exists(dest_path):
-            print(f"[HY-Motion] Model already exists: {dest_path}")
-            return (dest_path,)
+        if not selected_models:
+            return ("No models selected",)
             
-        url = MODEL_METADATA[model_choice]["url"]
-        download_file(url, dest_path)
+        results = download_models_parallel(selected_models, custom_path)
         
-        return (dest_path,)
+        # If no new downloads were needed, resolve existing paths
+        if not results:
+            results = [get_model_path(name, custom_path) for name in selected_models]
+            
+        return ("\n".join(results),)
 
 NODE_CLASS_MAPPINGS_MODULAR = {
     "HYMotionDiTLoader": HYMotionDiTLoader,

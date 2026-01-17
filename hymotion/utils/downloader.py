@@ -2,6 +2,7 @@ import os
 import requests
 from tqdm import tqdm
 import folder_paths
+from concurrent.futures import ThreadPoolExecutor
 
 MODEL_METADATA = {
     "HY-Motion-1.0 (Full)": {
@@ -26,7 +27,7 @@ MODEL_METADATA = {
     }
 }
 
-def download_file(url, dest_path):
+def download_file(url, dest_path, position=0):
     """Download a file with progress reporting."""
     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
     
@@ -36,16 +37,43 @@ def download_file(url, dest_path):
     total_size = int(response.headers.get('content-length', 0))
     block_size = 1024 * 1024  # 1MB
     
-    print(f"[HY-Motion] Downloading {os.path.basename(dest_path)}...")
+    filename = os.path.basename(dest_path)
     
     with open(dest_path, 'wb') as f:
-        with tqdm(total=total_size, unit='iB', unit_scale=True, desc=os.path.basename(dest_path)) as pbar:
+        with tqdm(total=total_size, unit='iB', unit_scale=True, desc=filename, position=position, leave=True) as pbar:
             for data in response.iter_content(block_size):
                 f.write(data)
                 pbar.update(len(data))
     
-    print(f"[HY-Motion] Download complete: {dest_path}")
     return dest_path
+
+def download_models_parallel(model_names, custom_path=None):
+    """Download multiple models in parallel."""
+    tasks = []
+    for i, name in enumerate(model_names):
+        if name not in MODEL_METADATA:
+            print(f"[HY-Motion] Skipping unknown model: {name}")
+            continue
+            
+        dest_path = get_model_path(name, custom_path)
+        if os.path.exists(dest_path):
+            print(f"[HY-Motion] Model already exists: {dest_path}")
+            continue
+            
+        url = MODEL_METADATA[name]["url"]
+        tasks.append((url, dest_path, i))
+        
+    if not tasks:
+        return []
+        
+    print(f"[HY-Motion] Starting parallel download of {len(tasks)} models...")
+    
+    with ThreadPoolExecutor(max_workers=min(len(tasks), 4)) as executor:
+        futures = [executor.submit(download_file, url, dest, pos) for url, dest, pos in tasks]
+        results = [f.result() for f in futures]
+        
+    print(f"[HY-Motion] Parallel download complete.")
+    return results
 
 def get_model_path(model_name, custom_path=None):
     """Resolve the destination path for a model."""
