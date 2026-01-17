@@ -22,7 +22,11 @@ _base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__fi
 QWEN_PATH = os.path.join(_base_dir, "models_configs", "Qwen3-8B")
 CLIP_PATH = os.path.join(_base_dir, "models_configs", "clip-vit-large-patch14")
 
-from comfy.quant_ops import QuantizedLayout, QuantizedTensor, register_layout_op, register_layout_class
+try:
+    from comfy.quant_ops import QuantizedLayout, QuantizedTensor, register_layout_op, register_layout_class
+except ImportError:
+    from comfy.quant_ops import QuantizedLayout, QuantizedTensor, register_layout_op
+    register_layout_class = None
 import comfy.ops
 
 class BlockScaledFP8Layout(QuantizedLayout):
@@ -72,7 +76,14 @@ def block_fp8_linear(func, args, kwargs):
     return torch.nn.functional.linear(input_tensor, weight, bias)
 
 # Register the layout
-LAYOUTS["BlockScaledFP8Layout"] = BlockScaledFP8Layout
+if register_layout_class is not None:
+    register_layout_class("BlockScaledFP8Layout", BlockScaledFP8Layout)
+else:
+    try:
+        from comfy.quant_ops import LAYOUTS
+        LAYOUTS["BlockScaledFP8Layout"] = BlockScaledFP8Layout
+    except ImportError:
+        print("[HYTextModel] WARNING: Could not find LAYOUTS or register_layout_class in comfy.quant_ops")
 
 class HYTextModel(nn.Module):
     def __init__(
