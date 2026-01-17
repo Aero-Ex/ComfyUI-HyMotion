@@ -971,13 +971,33 @@ def extract_animation(scene: FbxScene, skeleton: Skeleton):
     sample(scene.GetRootNode())
 
 def load_fbx(filepath: str, sample_rest_frame: int = None):
+    print(f"[Retarget] Loading FBX: {filepath}")
+    if not os.path.exists(filepath):
+        print(f"[Retarget] ERROR: File not found: {filepath}")
+        return None, None, None
+
     manager = fbx.FbxManager.Create()
+    if not manager:
+        print("[Retarget] ERROR: Failed to create FbxManager")
+        return None, None, None
+
+    # Create IO settings - CRITICAL for stability
+    ios = fbx.FbxIOSettings.Create(manager, fbx.IOSROOT)
+    manager.SetIOSettings(ios)
+    
     importer = fbx.FbxImporter.Create(manager, "")
-    if not importer.Initialize(filepath, -1, manager.GetIOSettings()):
+    if not importer.Initialize(filepath, -1, ios):
+        print(f"[Retarget] ERROR: Importer initialization failed: {importer.GetStatus().GetErrorString()}")
+        manager.Destroy()
         return None, None, None
         
     scene = fbx.FbxScene.Create(manager, "")
-    importer.Import(scene)
+    if not importer.Import(scene):
+        print(f"[Retarget] ERROR: Scene import failed: {importer.GetStatus().GetErrorString()}")
+        importer.Destroy()
+        manager.Destroy()
+        return None, None, None
+    
     importer.Destroy()
     
     # Pre-extract Bind Pose into a global map for total consistency
@@ -1516,6 +1536,11 @@ def save_fbx(manager, scene, path):
     print(f"[Retarget] Saved FBX to: {path}")
 
 def main():
+    print("[Retarget] Starting retargeting script...")
+    if not HAS_FBX_SDK:
+        print("[Retarget] ERROR: FBX SDK not found. Please install 'fbx' python package.")
+        sys.exit(1)
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--source', '-s', required=True)
     parser.add_argument('--target', '-t', required=True)
@@ -1529,17 +1554,20 @@ def main():
     args = parser.parse_args()
     
     if args.source.lower().endswith('.npz'):
-        print(f"Loading NPZ Source: {args.source}")
+        print(f"[Retarget] Loading NPZ Source: {args.source}")
         src_man, src_scene = None, None
         src_skel = load_npz(args.source)
     else:
-        # Sampling characters often use frame 0 as bind, but real FBX files have a Bind Pose 
-        # reachable by setting current animation stack to None.
+        print(f"[Retarget] Loading FBX Source: {args.source}")
         src_man, src_scene, src_skel = load_fbx(args.source, sample_rest_frame=None)
+        if src_skel is None:
+            print(f"[Retarget] ERROR: Failed to load source FBX: {args.source}")
+            sys.exit(1)
+            
         src_h = get_skeleton_height(src_skel, [])
         # FALLBACK: If Bind Pose is collapsed (height ~0), try frame 0
         if src_h < 0.1:
-            print("DEBUG: Bind Pose collapsed, falling back to frame 0 for rest pose.")
+            print("[Retarget] DEBUG: Bind Pose collapsed, falling back to frame 0 for rest pose.")
             src_man, src_scene, _ = load_fbx(args.source, sample_rest_frame=0)
             # Refresh skeleton with sampled data
             src_skel = Skeleton(os.path.basename(args.source))
@@ -1547,21 +1575,29 @@ def main():
         
         extract_animation(src_scene, src_skel)
     
+    print(f"[Retarget] Loading Target FBX: {args.target}")
     tgt_man, tgt_scene, tgt_skel = load_fbx(args.target)
+    if tgt_skel is None:
+        print(f"[Retarget] ERROR: Failed to load target FBX: {args.target}")
+        sys.exit(1)
     
+    print("[Retarget] Loading bone mapping...")
     mapping = load_bone_mapping(args.mapping, src_skel, tgt_skel)
     
+    print("[Retarget] Calculating retargeting...")
     rots, locs, active = retarget_animation(src_skel, tgt_skel, mapping, args.scale, args.yaw, args.neutral, args.in_place)
     
     print(f"\n[Retarget] Bone Mapping Results:\n  Total: {len(active)} bones mapped")
     if len(active) < 15:
-        print(f"  [WARNING] Very few bones mapped ({len(active)}). Retargeting might be poor for high-fidelity animations.")
+        print(f"[Retarget] [WARNING] Very few bones mapped ({len(active)}). Retargeting might be poor.")
         
     src_time_mode = src_scene.GetGlobalSettings().GetTimeMode() if src_scene else tgt_scene.GetGlobalSettings().GetTimeMode()
+    print("[Retarget] Applying retargeted animation to scene...")
     apply_retargeted_animation(tgt_scene, tgt_skel, rots, locs, src_skel.frame_start, src_skel.frame_end, src_time_mode)
     
+    print(f"[Retarget] Saving result to: {args.output}")
     save_fbx(tgt_man, tgt_scene, args.output)
-    print("Done!")
+    print("[Retarget] Done!")
 
 if __name__ == "__main__":
     main()

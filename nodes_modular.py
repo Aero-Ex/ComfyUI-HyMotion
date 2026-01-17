@@ -1402,25 +1402,6 @@ class HYMotionRetargetFBX:
     def retarget(self, motion_data, target_fbx, output_dir="hymotion_retarget", filename_prefix="retarget", 
                  mapping_file="", yaw_offset=0.0, scale=0.0, neutral_fingers=True, unique_names=True, in_place=False):
         """Retarget motion to custom FBX skeleton."""
-        if not target_fbx:
-            raise ValueError("Target FBX file path is empty. Please provide a path to a character FBX.")
-            
-        # Resolve path (handles 'input/file.fbx' or absolute paths)
-        resolved_path = folder_paths.get_annotated_filepath(target_fbx)
-        if resolved_path is None or not os.path.exists(resolved_path):
-            # Fallback for absolute paths or direct filenames
-            if os.path.exists(target_fbx):
-                resolved_path = target_fbx
-            else:
-                # Try input folder fallback
-                input_dir = folder_paths.get_input_directory()
-                
-                # Strip 'input/' prefix if it's there for the fallback join
-                clean_target = target_fbx
-                if target_fbx.startswith("input/"):
-                    clean_target = target_fbx[6:]
-                
-                potential_path = os.path.join(input_dir, clean_target)
                 if os.path.exists(potential_path):
                     resolved_path = potential_path
                 else:
@@ -1530,8 +1511,9 @@ class HYMotionRetargetFBX:
                 print(f"[HYMotionRetargetFBX] Batch {batch_idx} done: {os.path.basename(output_fbx)}")
                 
             except subprocess.CalledProcessError as e:
-                print(f"[HYMotionRetargetFBX] Batch {batch_idx} failed: {e.stderr}")
-                raise RuntimeError(f"Retargeting failed for batch {batch_idx}: {e.stderr}")
+                error_msg = f"Retargeting failed for batch {batch_idx}.\nSTDOUT: {e.stdout}\nSTDERR: {e.stderr}"
+                print(f"[HYMotionRetargetFBX] {error_msg}")
+                raise RuntimeError(error_msg)
             finally:
                 # Clean up temp NPZ
                 if os.path.exists(temp_npz):
