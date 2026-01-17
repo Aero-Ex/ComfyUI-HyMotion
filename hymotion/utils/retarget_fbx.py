@@ -1597,6 +1597,13 @@ def main():
     
     print(f"[Retarget] Saving result to: {args.output}")
     save_fbx(tgt_man, tgt_scene, args.output)
+    
+    # Explicit cleanup to prevent SIGSEGV on exit
+    if tgt_man:
+        tgt_man.Destroy()
+    if src_man and src_man != tgt_man:
+        src_man.Destroy()
+        
     print("[Retarget] Done!")
 
 if __name__ == "__main__":
