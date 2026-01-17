@@ -20,6 +20,7 @@ from .hymotion.network.text_encoders.text_encoder import HYTextModel
 from .hymotion.pipeline.motion_diffusion import length_to_mask, randn_tensor, MotionGeneration
 from .hymotion.utils.geometry import rot6d_to_rotation_matrix, rotation_matrix_to_rot6d, axis_angle_to_matrix
 from .hymotion.pipeline.body_model import WoodenMesh, construct_smpl_data_dict
+from .hymotion.utils.downloader import download_file, get_model_path, MODEL_METADATA
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 if CURRENT_DIR not in sys.path:
@@ -1776,7 +1777,34 @@ class HYMotionSMPLToData:
 
         print(f"[HY-Motion] Successfully converted {num_frames} frames ({num_joints} joints) from SMPL to HY-Motion format (Batch: {batch_size}).")
         return (motion_data,)
+class HYMotionModelDownloader:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "model_choice": (list(MODEL_METADATA.keys()),),
+            },
+            "optional": {
+                "custom_path": ("STRING", {"default": ""}),
+            }
+        }
 
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("model_path",)
+    FUNCTION = "download"
+    CATEGORY = "HY-Motion"
+
+    def download(self, model_choice, custom_path=""):
+        dest_path = get_model_path(model_choice, custom_path)
+        
+        if os.path.exists(dest_path):
+            print(f"[HY-Motion] Model already exists: {dest_path}")
+            return (dest_path,)
+            
+        url = MODEL_METADATA[model_choice]["url"]
+        download_file(url, dest_path)
+        
+        return (dest_path,)
 
 NODE_CLASS_MAPPINGS_MODULAR = {
     "HYMotionDiTLoader": HYMotionDiTLoader,
@@ -1784,10 +1812,8 @@ NODE_CLASS_MAPPINGS_MODULAR = {
     "HYMotionTextEncode": HYMotionTextEncode,
     "HYMotionSampler": HYMotionSampler,
     "HYMotionModularExportFBX": HYMotionModularExportFBX,
-    "HYMotionPromptRewrite": HYMotionPromptRewrite,
-    "HYMotionSaveNPZ": HYMotionSaveNPZ,
-    "HYMotionRetargetFBX": HYMotionRetargetFBX,
-    "HYMotionSMPLToData": HYMotionSMPLToData,
+    "HYMotionFBXPlayer": HYMotionFBXPlayer,
+    "HYMotionModelDownloader": HYMotionModelDownloader,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS_MODULAR = {
@@ -1795,10 +1821,7 @@ NODE_DISPLAY_NAME_MAPPINGS_MODULAR = {
     "HYMotionTextEncoderLoader": "HY-Motion Text Encoder Loader",
     "HYMotionTextEncode": "HY-Motion Text Encode",
     "HYMotionSampler": "HY-Motion Sampler",
-    "HYMotionModularExportFBX": "HY-Motion Modular Export FBX",
-    "HYMotionPromptRewrite": "HY-Motion Prompt Rewrite",
-    "HYMotionSaveNPZ": "HY-Motion Save NPZ",
-    "HYMotionRetargetFBX": "HY-Motion Retarget to FBX",
-    "HYMotionSMPLToData": "HY-Motion SMPL to Data",
+    "HYMotionModularExportFBX": "HY-Motion Export FBX",
+    "HYMotionFBXPlayer": "HY-Motion FBX Player",
+    "HYMotionModelDownloader": "HY-Motion Model Downloader",
 }
-
