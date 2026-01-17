@@ -1403,24 +1403,46 @@ class HYMotionRetargetFBX:
                  mapping_file="", yaw_offset=0.0, scale=0.0, neutral_fingers=True, unique_names=True, in_place=False):
         """Retarget motion to custom FBX skeleton."""
         
-        # Resolve target FBX path
+        # Resolve target FBX path robustly
+        resolved_path = None
+        
         if os.path.isabs(target_fbx):
-            resolved_path = target_fbx
+            if os.path.exists(target_fbx):
+                resolved_path = target_fbx
         else:
+            # Handle common prefixes
+            if target_fbx.startswith("input/"):
+                rel_path = target_fbx[6:]
+                potential_path = os.path.join(folder_paths.get_input_directory(), rel_path)
+                if os.path.exists(potential_path):
+                    resolved_path = potential_path
+            elif target_fbx.startswith("output/"):
+                rel_path = target_fbx[7:]
+                potential_path = os.path.join(folder_paths.get_output_directory(), rel_path)
+                if os.path.exists(potential_path):
+                    resolved_path = potential_path
+            
+            # Fallback: Search in input and output directories
+            if not resolved_path:
+                input_dir = folder_paths.get_input_directory()
+                output_dir_comfy = folder_paths.get_output_directory()
+                
+                for base_dir in [input_dir, output_dir_comfy]:
+                    potential_path = os.path.join(base_dir, target_fbx)
+                    if os.path.exists(potential_path):
+                        resolved_path = potential_path
+                        break
+        
+        if not resolved_path:
+            # Final attempt: list files in input dir to help user debug
             input_dir = folder_paths.get_input_directory()
-            potential_path = os.path.join(input_dir, target_fbx)
-            if os.path.exists(potential_path):
-                resolved_path = potential_path
-            else:
-                # Final attempt: list files in input dir to help user debug
-                print(f"[HY-Motion] ERROR: Target FBX not found: {target_fbx}")
-                print(f"[HY-Motion] Checked: {potential_path}")
-                try:
-                    files = os.listdir(input_dir)
-                    print(f"[HY-Motion] Files in input directory: {files[:10]}...")
-                except:
-                    pass
-                raise ValueError(f"Target FBX file not found: {target_fbx}")
+            print(f"[HY-Motion] ERROR: Target FBX not found: {target_fbx}")
+            try:
+                files = os.listdir(input_dir)
+                print(f"[HY-Motion] Files in input directory: {files[:10]}...")
+            except:
+                pass
+            raise ValueError(f"Target FBX file not found: {target_fbx}")
         
         target_fbx = resolved_path
         
