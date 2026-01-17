@@ -1402,18 +1402,25 @@ class HYMotionRetargetFBX:
     def retarget(self, motion_data, target_fbx, output_dir="hymotion_retarget", filename_prefix="retarget", 
                  mapping_file="", yaw_offset=0.0, scale=0.0, neutral_fingers=True, unique_names=True, in_place=False):
         """Retarget motion to custom FBX skeleton."""
-                if os.path.exists(potential_path):
-                    resolved_path = potential_path
-                else:
-                    # Final attempt: list files in input dir to help user debug
-                    print(f"[HY-Motion] ERROR: Target FBX not found: {target_fbx}")
-                    print(f"[HY-Motion] Checked: {potential_path}")
-                    try:
-                        files = os.listdir(input_dir)
-                        print(f"[HY-Motion] Files in input directory: {files[:10]}...")
-                    except:
-                        pass
-                    raise ValueError(f"Target FBX file not found: {target_fbx}")
+        
+        # Resolve target FBX path
+        if os.path.isabs(target_fbx):
+            resolved_path = target_fbx
+        else:
+            input_dir = folder_paths.get_input_directory()
+            potential_path = os.path.join(input_dir, target_fbx)
+            if os.path.exists(potential_path):
+                resolved_path = potential_path
+            else:
+                # Final attempt: list files in input dir to help user debug
+                print(f"[HY-Motion] ERROR: Target FBX not found: {target_fbx}")
+                print(f"[HY-Motion] Checked: {potential_path}")
+                try:
+                    files = os.listdir(input_dir)
+                    print(f"[HY-Motion] Files in input directory: {files[:10]}...")
+                except:
+                    pass
+                raise ValueError(f"Target FBX file not found: {target_fbx}")
         
         target_fbx = resolved_path
         
