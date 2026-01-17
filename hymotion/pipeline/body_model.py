@@ -322,46 +322,57 @@ class WoodenMesh(torch.nn.Module):
         trans = params["trans"]
         bs, num_frames = rot6d.shape[:2]
         
-        # Initialize output containers
-        all_vertices = []
-        all_vertices_wotrans = []
-        all_keypoints3d = []
+        # Initialize output containers - one per sample
+        all_results = []
         
-        # Process in chunks to avoid OOM
-        for start_idx in range(0, num_frames, chunk_size):
-            end_idx = min(start_idx + chunk_size, num_frames)
+        # Process one sample at a time to minimize peak VRAM
+        for sample_idx in range(bs):
+            sample_vertices = []
+            sample_vertices_wotrans = []
+            sample_keypoints3d = []
             
-            # Extract chunk
-            rot6d_chunk = rot6d[:, start_idx:end_idx]
-            trans_chunk = trans[:, start_idx:end_idx]
+            # Process frames in chunks for this sample
+            for start_idx in range(0, num_frames, chunk_size):
+                end_idx = min(start_idx + chunk_size, num_frames)
+                chunk_frames = end_idx - start_idx
+                
+                # Get chunk for this single sample: (chunk_frames, J, 6) and (chunk_frames, 3)
+                rot6d_chunk = rot6d[sample_idx, start_idx:end_idx]
+                trans_chunk = trans[sample_idx, start_idx:end_idx]
+                
+                # Forward pass for this chunk
+                result = self.forward({"rot6d": rot6d_chunk, "trans": trans_chunk})
+                
+                # Store results (move to CPU immediately to free VRAM)
+                if "vertices" in result:
+                    sample_vertices.append(result["vertices"].cpu())
+                if "vertices_wotrans" in result:
+                    sample_vertices_wotrans.append(result["vertices_wotrans"].cpu())
+                if "keypoints3d" in result:
+                    sample_keypoints3d.append(result["keypoints3d"].cpu())
+                
+                # Clear cache after each chunk
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
             
-            chunk_frames = end_idx - start_idx
-            rot6d_flat = rot6d_chunk.reshape(bs * chunk_frames, rot6d_chunk.shape[2], rot6d_chunk.shape[3])
-            trans_flat = trans_chunk.reshape(bs * chunk_frames, trans_chunk.shape[2])
-            
-            # Forward pass for chunk
-            result = self.forward({"rot6d": rot6d_flat, "trans": trans_flat})
-            
-            # Reshape and store
-            for key, container in [("vertices", all_vertices), 
-                                   ("vertices_wotrans", all_vertices_wotrans),
-                                   ("keypoints3d", all_keypoints3d)]:
-                if key in result:
-                    reshaped = result[key].reshape(bs, chunk_frames, *result[key].shape[1:])
-                    container.append(reshaped.cpu())  # Move to CPU to free VRAM
-            
-            # Clear GPU cache after each chunk
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            # Concatenate chunks for this sample along frame dimension
+            sample_result = {}
+            if sample_vertices:
+                sample_result["vertices"] = torch.cat(sample_vertices, dim=0)  # (T, V, 3)
+            if sample_vertices_wotrans:
+                sample_result["vertices_wotrans"] = torch.cat(sample_vertices_wotrans, dim=0)
+            if sample_keypoints3d:
+                sample_result["keypoints3d"] = torch.cat(sample_keypoints3d, dim=0)  # (T, J, 3)
+            all_results.append(sample_result)
         
-        # Concatenate all chunks
+        # Stack all samples: (B, T, ...)
         out = {}
-        if all_vertices:
-            out["vertices"] = torch.cat(all_vertices, dim=1)
-        if all_vertices_wotrans:
-            out["vertices_wotrans"] = torch.cat(all_vertices_wotrans, dim=1)
-        if all_keypoints3d:
-            out["keypoints3d"] = torch.cat(all_keypoints3d, dim=1)
+        if all_results and "vertices" in all_results[0]:
+            out["vertices"] = torch.stack([r["vertices"] for r in all_results], dim=0)
+        if all_results and "vertices_wotrans" in all_results[0]:
+            out["vertices_wotrans"] = torch.stack([r["vertices_wotrans"] for r in all_results], dim=0)
+        if all_results and "keypoints3d" in all_results[0]:
+            out["keypoints3d"] = torch.stack([r["keypoints3d"] for r in all_results], dim=0)
         
         return out
 

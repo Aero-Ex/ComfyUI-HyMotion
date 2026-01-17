@@ -11,7 +11,6 @@ models/
 /hymotion/HY-Motion-1.0/
 /hymotion/HY-Motion-1.0-Lite/
 # Only ignore text_encoders if it's in the root (where models might be)
-/text_encoders/
 
 # assets/
 # workflows/*.json

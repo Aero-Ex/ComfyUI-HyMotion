@@ -29,20 +29,47 @@ except ImportError:
     register_layout_class = None
 import comfy.ops
 
+from dataclasses import dataclass
+
 class BlockScaledFP8Layout(QuantizedLayout):
     """
     Handles block-wise FP8 scaling (e.g. Qwen3 models).
     Storage format:
     - qdata: FP8 tensor
-    - scale: Block-wise scale tensor
+    - scale: Block-wise scale tensor (2D)
     - orig_dtype: Original dtype for dequantization
     """
+    
+    @dataclass
+    class Params:
+        scale: torch.Tensor
+        orig_dtype: torch.dtype
+        orig_shape: tuple
+        
+        def clone(self):
+            """Clone the params - required by comfy_kitchen QuantizedTensor"""
+            return BlockScaledFP8Layout.Params(
+                scale=self.scale.clone() if isinstance(self.scale, torch.Tensor) else self.scale,
+                orig_dtype=self.orig_dtype,
+                orig_shape=self.orig_shape
+            )
+    
     @classmethod
     def quantize(cls, tensor, scale=None, dtype=torch.float8_e4m3fn, **kwargs):
         raise NotImplementedError("BlockScaledFP8Layout only supports loading pre-quantized weights.")
 
     @staticmethod
-    def dequantize(qdata, scale, orig_dtype, **kwargs):
+    def dequantize(qdata, scale, orig_dtype=None, **kwargs):
+        # Handle both direct args and Params object
+        if hasattr(scale, 'scale'):
+            params = scale
+            scale = params.scale
+            if orig_dtype is None:
+                orig_dtype = params.orig_dtype
+        
+        if orig_dtype is None:
+            orig_dtype = torch.float32
+            
         # Efficient block-wise dequantization using broadcasting
         bh = qdata.shape[0] // scale.shape[0]
         bw = qdata.shape[1] // scale.shape[1]
@@ -58,7 +85,7 @@ class BlockScaledFP8Layout(QuantizedLayout):
 
     @classmethod
     def get_plain_tensors(cls, qtensor):
-        return qtensor._qdata, qtensor._layout_params['scale']
+        return qtensor._qdata, qtensor._layout_params.scale
 
 # Register linear op for BlockScaledFP8Layout
 @register_layout_op(torch.ops.aten.linear.default, "BlockScaledFP8Layout")
@@ -67,11 +94,17 @@ def block_fp8_linear(func, args, kwargs):
     weight = args[1]
     bias = args[2] if len(args) > 2 else None
 
-    # Fallback to dequantization (CPU/Non-TensorCore)
+    # Dequantize to match input_tensor.dtype for math compatibility
     if isinstance(weight, QuantizedTensor):
-        weight = weight.dequantize()
+        qdata, scale = weight.layout_cls.get_plain_tensors(weight)
+        weight = weight.layout_cls.dequantize(qdata, scale, orig_dtype=input_tensor.dtype)
+    
     if isinstance(input_tensor, QuantizedTensor):
         input_tensor = input_tensor.dequantize()
+
+    # Ensure bias matches input dtype if present
+    if bias is not None and bias.dtype != input_tensor.dtype:
+        bias = bias.to(input_tensor.dtype)
 
     return torch.nn.functional.linear(input_tensor, weight, bias)
 
@@ -196,7 +229,18 @@ class HYTextModel(nn.Module):
         path, param_name = key.rsplit(".", 1)
         mod = model
         for part in path.split("."):
-            mod = getattr(mod, part, None)
+            if part.isdigit():
+                # Handle ModuleList/ModuleDict indexing
+                try:
+                    idx = int(part)
+                    if isinstance(mod, (nn.ModuleList, nn.Sequential)):
+                        mod = mod[idx]
+                    else:
+                        mod = getattr(mod, part, None)
+                except (ValueError, IndexError, KeyError):
+                    mod = None
+            else:
+                mod = getattr(mod, part, None)
             if mod is None: break
         return mod, param_name
 
@@ -228,15 +272,29 @@ class HYTextModel(nn.Module):
                 weight = filtered_sd.pop(key)
                 target_key = None
                 
-                # Super-aggressive universal matching logic
-                clean_key = key
-                if clean_key.startswith("text_model."): clean_key = clean_key[11:]
-                elif clean_key.startswith("model."): clean_key = clean_key[6:]
-                elif clean_key.startswith("transformer."): clean_key = clean_key[12:]
+                # Try keys in order of priority
+                # 1. Original key as-is
+                # 2. Various prefix combinations
+                keys_to_try = [key]
                 
-                # Exhaustive prefix search: check if attribute path exists in model
-                for p in ["", "text_model.", "model.", "transformer.", "encoder."]:
-                    pk = f"{p}{clean_key}"
+                # Generate variations
+                clean_key = key
+                if clean_key.startswith("text_model."):
+                    clean_key = clean_key[11:]
+                    keys_to_try.append(clean_key)
+                elif clean_key.startswith("transformer."):
+                    clean_key = clean_key[12:]
+                    keys_to_try.append(clean_key)
+                # NOTE: Do NOT strip "model." prefix - Qwen3 uses model.layers structure
+                
+                # Add prefix variations
+                for p in ["text_model.", "model.", "transformer.", "encoder."]:
+                    for k in [key, clean_key]:
+                        if not k.startswith(p):
+                            keys_to_try.append(f"{p}{k}")
+                
+                # Exhaustive search for matching key
+                for pk in keys_to_try:
                     mod, param_name = self._get_module_and_param_name(model, pk)
                     if mod is not None and (hasattr(mod, param_name) or hasattr(mod, "ggml_load_from_state_dict")):
                         target_key = pk
@@ -259,20 +317,31 @@ class HYTextModel(nn.Module):
                 param = getattr(mod, param_name, None)
                 expected_shape = param.shape if param is not None else getattr(mod, "tensor_shape", None)
                 
-                # Convert FP8 weights using QuantizedTensor if scales exist
+                # Convert FP8 weights to QuantizedTensor for native FP8 storage
                 is_fp8 = hasattr(weight, "dtype") and str(weight.dtype) == "torch.float8_e4m3fn"
                 if is_fp8:
                     base_path = key.rsplit(".", 1)[0]
                     scale = scales.get(base_path, None)
                     
                     if scale is not None:
-                        # Wrap in QuantizedTensor with BlockScaledFP8Layout
-                        layout_params = {
-                            'scale': scale,
-                            'orig_dtype': torch.bfloat16 if target_device.type != "cpu" else torch.float32
-                        }
-                        weight = QuantizedTensor(weight, "BlockScaledFP8Layout", layout_params)
-                        loaded_count += 2 # Count weight + scale
+                        # Wrap FP8 weight in QuantizedTensor with BlockScaledFP8Layout
+                        # This keeps weights in FP8 format (~8GB vs ~32GB dequantized)
+                        # Dequantization happens at inference time in the linear op
+                        # Determine appropriate orig_dtype based on device
+                        # CPU usually needs float32 for compatibility/performance
+                        orig_dtype = torch.float32 if target_device.type == "cpu" else torch.bfloat16
+                        
+                        params = BlockScaledFP8Layout.Params(
+                            scale=scale,
+                            orig_dtype=orig_dtype,
+                            orig_shape=tuple(weight.shape)
+                        )
+                        weight = QuantizedTensor(weight, "BlockScaledFP8Layout", params)
+                    else:
+                        # FP8 without scale - fallback to device-appropriate dtype
+                        target_dtype = torch.float32 if target_device.type == "cpu" else torch.bfloat16
+                        print(f"[HYTextModel] WARNING: FP8 weight without scale: {key}")
+                        weight = weight.to(target_dtype)
                 
                 # Refined backup shape detection for GGMLLayers
                 if expected_shape is None:
@@ -283,22 +352,36 @@ class HYTextModel(nn.Module):
                         expected_shape = (mod.num_embeddings, mod.embedding_dim)
 
                 if expected_shape is not None:
-                    # Generic shape correction (squeeze/unsqueeze)
-                    if expected_shape != weight.shape:
-                        if len(expected_shape) == 1 and len(weight.shape) == 2 and weight.shape[1] == 1:
-                            weight = weight.squeeze(1)
+                    # Get actual shape - handle QuantizedTensor
+                    if isinstance(weight, QuantizedTensor):
+                        weight_shape = weight.params.orig_shape
+                    else:
+                        weight_shape = tuple(weight.shape)
                     
-                    if expected_shape == weight.shape:
+                    # Generic shape correction (squeeze/unsqueeze) - only for non-quantized
+                    if not isinstance(weight, QuantizedTensor) and expected_shape != weight_shape:
+                        if len(expected_shape) == 1 and len(weight_shape) == 2 and weight_shape[1] == 1:
+                            weight = weight.squeeze(1)
+                            weight_shape = tuple(weight.shape)
+                    
+                    # Convert expected_shape to tuple for comparison
+                    expected_tuple = tuple(expected_shape)
+                    
+                    if expected_tuple == weight_shape:
                         if is_ggml_layer:
                             setattr(mod, param_name, torch.nn.Parameter(weight, requires_grad=False))
+                        elif isinstance(weight, QuantizedTensor):
+                            # For QuantizedTensor, set directly as Parameter
+                            # set_module_tensor_to_device doesn't handle quantized tensors
+                            setattr(mod, param_name, torch.nn.Parameter(weight, requires_grad=False))
                         else:
-                            # Ensure float32 on CPU for non-GGML layers (Norms, dequantized Embeddings, etc.)
-                            if target_device.type == "cpu" and weight.dtype in [torch.float16, torch.bfloat16]:
+                            # For regular tensors on CPU, ensure float32 for norms/embeddings
+                            if target_device.type == "cpu" and hasattr(weight, 'dtype') and weight.dtype in [torch.float16, torch.bfloat16]:
                                 weight = weight.to(torch.float32)
                             set_module_tensor_to_device(model, target_key, target_device, value=weight)
                         loaded_count += 1
                     else:
-                        missing_keys.append(f"{key} (shape mismatch: {weight.shape} vs {expected_shape})")
+                        missing_keys.append(f"{key} (shape mismatch: {weight_shape} vs {expected_tuple})")
                 else:
                     missing_keys.append(f"{key} (could not determine target shape)")
             except Exception as e:
