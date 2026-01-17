@@ -1599,12 +1599,11 @@ def main():
     save_fbx(tgt_man, tgt_scene, args.output)
     
     # Explicit cleanup to prevent SIGSEGV on exit
-    if tgt_man:
-        tgt_man.Destroy()
-    if src_man and src_man != tgt_man:
-        src_man.Destroy()
-        
+    # We use os._exit(0) to bypass the Python interpreter's cleanup sequence
+    # which often conflicts with the FBX SDK's own cleanup.
     print("[Retarget] Done!")
+    sys.stdout.flush()
+    os._exit(0)
 
 if __name__ == "__main__":
     main()
