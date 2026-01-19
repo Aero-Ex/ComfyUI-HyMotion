@@ -157,9 +157,20 @@ class Skeleton:
         self.fps = 30.0
         self.frame_start = 0
         self.frame_end = 0
+        self.bone_children: dict[str, list[str]] = {} # bone_name -> list of child bone names
 
     def add_bone(self, bone: BoneData):
         self.bones[bone.name.lower()] = bone
+        if bone.bone_parent_name:
+            pname = bone.bone_parent_name.lower()
+            if pname not in self.bone_children:
+                self.bone_children[pname] = []
+            if bone.name not in self.bone_children[pname]:
+                self.bone_children[pname].append(bone.name)
+
+    def get_children(self, bone_name: str) -> list[BoneData]:
+        names = self.bone_children.get(bone_name.lower(), [])
+        return [self.bones[n.lower()] for n in names if n.lower() in self.bones]
     
     def get_bone_case_insensitive(self, name: str) -> BoneData:
         if not name: return None
@@ -185,6 +196,59 @@ class Skeleton:
                 return bone
                 
         return None
+
+    def get_geometric_features(self) -> dict[str, dict]:
+        """
+        Calculate geometric features for all bones in the skeleton.
+        Returns a dict mapping bone name to its features:
+        { 'pos': normalized_pos, 'depth': hierarchy_depth, 'side': -1|0|1 }
+        """
+        features = {}
+        
+        # 1. Find Pelvis/Root for normalization
+        pelvis = self.get_bone_case_insensitive("Pelvis")
+        if not pelvis:
+            # Fallback to first bone if no pelvis
+            pelvis = next(iter(self.bones.values())) if self.bones else None
+        
+        if not pelvis: return {}
+
+        # 2. Get height for scaling
+        height = get_skeleton_height(self)
+        if height < 0.001: height = 1.0
+        
+        # 3. Calculate features for each bone
+        for name, bone in self.bones.items():
+            # Relative position to pelvis, normalized by height
+            rel_pos = (bone.head - pelvis.head) / height
+            
+            # Depth in hierarchy
+            depth = 0
+            curr = bone
+            visited = set()
+            while curr and curr.bone_parent_name and curr.name not in visited:
+                visited.add(curr.name)
+                curr = self.get_bone_case_insensitive(curr.bone_parent_name)
+                depth += 1
+            
+            # Side detection: -1 (Left), 0 (Center), 1 (Right)
+            # Based on X-coordinate in local space (assuming Y-up or Z-up standard)
+            side = 0
+            if rel_pos[0] > 0.05: side = 1
+            elif rel_pos[0] < -0.05: side = -1
+            
+            # Refine side based on name if possible
+            lower_name = bone.name.lower()
+            if "left" in lower_name or "l_" in lower_name or ".l" in lower_name: side = -1
+            elif "right" in lower_name or "r_" in lower_name or ".r" in lower_name: side = 1
+
+            features[bone.name] = {
+                'pos': rel_pos,
+                'depth': depth,
+                'side': side
+            }
+            
+        return features
 
 # =============================================================================
 # NPZ Support (SMPL-H)
@@ -292,43 +356,55 @@ def load_npz(filepath: str) -> Skeleton:
             p = parents[i]
             world_rots[f, i] = world_rots[f, p] @ local_mats[f, i]
 
-    # 3. Create a Standing Rest Pose for displacement reference
-    # We calculate the height of the character in a standing pose
-    standing_kps = np.zeros((52, 3))
-    standing_kps[0] = [0, 0, 0] # Root at origin
+    # 3. Create a Canonical T-Pose for rest pose reference
+    # This ensures stable retargeting offsets (off_q) and accurate geometric matching.
+    t_pose_kps = np.zeros((52, 3))
+    t_pose_kps[0] = [0, 0, 0] # Pelvis at origin
+    
+    # Define T-pose directions for SMPL-H
+    # Y is Up, X is Side, Z is Forward
     for i in range(1, 52):
         p = parents[i]
-        # In SMPL-H rest pose (Identity), bones are oriented such that 
-        # the vector to the child is the rest-pose offset.
-        # We'll just use the first frame's bone lengths but oriented vertically.
         dist = np.linalg.norm(kps[0, i] - kps[0, p])
-        # Rough vertical stack for spine/legs
-        if i in [1, 2, 4, 5, 7, 8, 10, 11]: # Legs
-            standing_kps[i] = standing_kps[p] + [0, -dist, 0]
-        else: # Torso/Arms
-            standing_kps[i] = standing_kps[p] + [0, dist, 0]
-
-    # Shift standing kps so the lowest point is at Y=0
-    y_min = np.min(standing_kps[:, 1])
-    standing_kps[:, 1] -= y_min
+        name = names[i].lower()
+        
+        # Default direction: Up
+        dir_vec = np.array([0.0, 1.0, 0.0])
+        
+        if any(x in name for x in ['hip', 'knee', 'ankle', 'foot']):
+            dir_vec = np.array([0.0, -1.0, 0.0]) # Legs down
+            if 'hip' in name:
+                # Add a small X offset to separate hips for side detection
+                if name.startswith('l_'): dir_vec[0] = 0.5
+                else: dir_vec[0] = -0.5
+                dir_vec /= np.linalg.norm(dir_vec)
+        elif 'collar' in name or 'shoulder' in name or 'elbow' in name or 'wrist' in name or 'index' in name or 'middle' in name or 'pinky' in name or 'ring' in name or 'thumb' in name:
+            if name.startswith('l_'):
+                dir_vec = np.array([1.0, 0.0, 0.0]) # Left arm out (+X)
+            else:
+                dir_vec = np.array([-1.0, 0.0, 0.0]) # Right arm out (-X)
+        
+        t_pose_kps[i] = t_pose_kps[p] + dir_vec * dist
 
     for i, name in enumerate(names):
         bone = BoneData(name)
         p_idx = parents[i]
-        if p_idx != -1: bone.parent_name = names[p_idx]
+        if p_idx != -1: 
+            bone.parent_name = names[p_idx]
+            bone.bone_parent_name = names[p_idx]
         
+        # Rest Pose = Canonical T-Pose
+        bone.rest_rotation = np.array([1, 0, 0, 0]) # Identity
+        bone.head = t_pose_kps[i]
+        bone.world_matrix = np.eye(4)
+        bone.world_matrix[:3, :3] = np.eye(3) # Identity world rotation
+        bone.world_matrix[3, :3] = t_pose_kps[i]
+        
+        # Animation
         for f in range(T):
             bone.world_animation[f] = matrix_to_quaternion(world_rots[f, i].T)
             bone.world_location_animation[f] = global_kps[f, i]
             
-        bone.rest_rotation = matrix_to_quaternion(rest_world_rots[i].T)
-        
-        # Use standing pose for the rest matrix reference
-        bone.head = standing_kps[i]
-        bone.world_matrix = np.eye(4)
-        bone.world_matrix[:3, :3] = rest_world_rots[i]
-        bone.world_matrix[3, :3] = standing_kps[i]
-        
         skel.add_bone(bone)
         skel.all_nodes[name] = name
         skel.node_rest_rotations[name] = bone.rest_rotation
@@ -485,6 +561,66 @@ BASE_BONE_MAPPING = {
     "bone_8": "mixamorig:leftforearm", # Unirig L_Elbow
     "bone_26": "mixamorig:rightarm", # Unirig R_Shoulder
     "bone_27": "mixamorig:rightforearm", # Unirig R_Elbow
+}
+
+# ArticulationXL (UniRig) Bone Mapping (Strictly from unirig.json)
+ARTICULATION_MAPPING = {
+    "Pelvis": ["bone_0"],
+    "L_Hip": ["bone_44"], "L_Knee": ["bone_45"], "L_Ankle": ["bone_46"], "L_Foot": ["bone_47"],
+    "R_Hip": ["bone_48"], "R_Knee": ["bone_49"], "R_Ankle": ["bone_50"], "R_Foot": ["bone_51"],
+    "Spine1": ["bone_1"], "Spine2": ["bone_2"], "Spine3": ["bone_3"],
+    "Neck": ["bone_4"], "Head": ["bone_5"],
+    "L_Collar": ["bone_6"], "L_Shoulder": ["bone_7"], "L_Elbow": ["bone_8"], "L_Wrist": ["bone_9"],
+    "R_Collar": ["bone_25"], "R_Shoulder": ["bone_26"], "R_Elbow": ["bone_27"], "R_Wrist": ["bone_28"],
+    "L_Index1": ["bone_13"], "L_Index2": ["bone_14"], "L_Index3": ["bone_15"],
+    "L_Middle1": ["bone_16"], "L_Middle2": ["bone_17"], "L_Middle3": ["bone_18"],
+    "L_Ring1": ["bone_19"], "L_Ring2": ["bone_20"], "L_Ring3": ["bone_21"],
+    "L_Pinky1": ["bone_22"], "L_Pinky2": ["bone_23"], "L_Pinky3": ["bone_24"],
+    "L_Thumb1": ["bone_10"], "L_Thumb2": ["bone_11"], "L_Thumb3": ["bone_12"],
+    "R_Index1": ["bone_32"], "R_Index2": ["bone_33"], "R_Index3": ["bone_34"],
+    "R_Middle1": ["bone_35"], "R_Middle2": ["bone_36"], "R_Middle3": ["bone_37"],
+    "R_Ring1": ["bone_38"], "R_Ring2": ["bone_39"], "R_Ring3": ["bone_40"],
+    "R_Pinky1": ["bone_41"], "R_Pinky2": ["bone_42"], "R_Pinky3": ["bone_43"],
+    "R_Thumb1": ["bone_29"], "R_Thumb2": ["bone_30"], "R_Thumb3": ["bone_31"],
+}
+
+    # UE5 Bone Mapping (Strictly from user request)
+UE5_MAPPING = {
+    "Pelvis": ["pelvis"], 
+    "Spine1": ["spine_01", "spine_02"], 
+    "Spine2": ["spine_03"], 
+    "Spine3": ["spine_04", "spine_05"],
+    "Neck": ["neck_01", "neck_02", "neck_03"], 
+    "Head": ["head"],
+    "L_Collar": ["clavicle_l"], "R_Collar": ["clavicle_r"],
+    "L_Shoulder": ["upperarm_l"], "R_Shoulder": ["upperarm_r"],
+    "L_Elbow": ["lowerarm_l"], "R_Elbow": ["lowerarm_r"],
+    "L_Wrist": ["hand_l"], "R_Wrist": ["hand_r"],
+    "L_Hip": ["thigh_l"], "L_Knee": ["calf_l"], "L_Ankle": ["foot_l"],
+    "R_Hip": ["thigh_r"], "R_Knee": ["calf_r"], "R_Ankle": ["foot_r"],
+    "L_Foot": ["ball_l"], "R_Foot": ["ball_r"],
+    "L_Thumb1": ["thumb_01_l"], "L_Thumb2": ["thumb_02_l"], "L_Thumb3": ["thumb_03_l"],
+    "L_Index1": ["index_01_l"], "L_Index2": ["index_02_l"], "L_Index3": ["index_03_l"],
+    "L_Middle1": ["middle_01_l"], "L_Middle2": ["middle_02_l"], "L_Middle3": ["middle_03_l"],
+    "L_Ring1": ["ring_01_l"], "L_Ring2": ["ring_02_l"], "L_Ring3": ["ring_03_l"],
+    "L_Pinky1": ["pinky_01_l"], "L_Pinky2": ["pinky_02_l"], "L_Pinky3": ["pinky_03_l"],
+    "R_Thumb1": ["thumb_01_r"], "R_Thumb2": ["thumb_02_r"], "R_Thumb3": ["thumb_03_r"],
+    "R_Index1": ["index_01_r"], "R_Index2": ["index_02_r"], "R_Index3": ["index_03_r"],
+    "R_Middle1": ["middle_01_r"], "R_Middle2": ["middle_02_r"], "R_Middle3": ["middle_03_r"],
+    "R_Ring1": ["ring_01_r"], "R_Ring2": ["ring_02_r"], "R_Ring3": ["ring_03_r"],
+    "R_Pinky1": ["pinky_01_r"], "R_Pinky2": ["pinky_02_r"], "R_Pinky3": ["pinky_03_r"],
+}
+
+# Add fuzzy aliases FOR THE SOURCE only - prevents mapping to incorrect target bones like thigh_twist
+UE5_SOURCE_ALIASES = {
+    "Spine2": ["Spine2", "Chest"],
+    "Spine3": ["Spine3", "Chest"],
+    "L_Knee": ["L_Knee", "LowerLeg_L"],
+    "R_Knee": ["R_Knee", "LowerLeg_R"],
+    "L_Ankle": ["L_Ankle", "L_Foot", "Ankle_L"],
+    "R_Ankle": ["R_Ankle", "R_Foot", "Ankle_R"],
+    "L_Foot": ["L_Toe", "Ball_L"],
+    "R_Foot": ["R_Toe", "Ball_R"],
 }
 
 # Comprehensive bone name aliases for fuzzy matching
@@ -728,16 +864,13 @@ def find_best_bone_match(
     
     return best_match, best_score
 
-def get_skeleton_height(skeleton: Skeleton, mapping_dict: dict = None) -> float:
+def get_skeleton_height(skeleton: Skeleton) -> float:
     """
     Calculate skeleton height using bone lengths (Pelvis -> Spine -> Neck -> Head).
     This is pose-invariant and works even if the character is lying down.
     """
     # 1. Try Bone Chain Method (Robust)
-    # Standard SMPL-H / Mixamo chain
     pelvis_names = ['pelvis', 'hips', 'bone_0', 'mixamorig:hips']
-    spine_names = ['spine', 'spine1', 'spine2', 'spine3', 'chest', 'mixamorig:spine', 'mixamorig:spine1', 'mixamorig:spine2']
-    neck_names = ['neck', 'mixamorig:neck']
     head_names = ['head', 'mixamorig:head']
 
     def find_bone(names):
@@ -750,8 +883,6 @@ def get_skeleton_height(skeleton: Skeleton, mapping_dict: dict = None) -> float:
     head = find_bone(head_names)
 
     if pelvis and head:
-        # Calculate distance between joints in rest pose
-        # We sum the lengths of the segments to get the "true" height
         total_len = 0.0
         curr = head
         visited = set()
@@ -762,21 +893,19 @@ def get_skeleton_height(skeleton: Skeleton, mapping_dict: dict = None) -> float:
             parent = skeleton.get_bone_case_insensitive(pname)
             if not parent: break
             
-            # Length is distance between parent head and child head in rest pose
             dist = np.linalg.norm(curr.head - parent.head)
             total_len += dist
             curr = parent
         
         # Add leg length (approximate from Pelvis to Foot)
-        # We look for a leg chain
-        leg_names = ['l_hip', 'l_knee', 'l_ankle', 'leftupleg', 'leftleg', 'leftfoot', 'mixamorig:leftupleg', 'mixamorig:leftleg', 'mixamorig:leftfoot']
-        l_hip = find_bone(['l_hip', 'leftupleg', 'mixamorig:leftupleg'])
-        l_foot = find_bone(['l_ankle', 'leftfoot', 'mixamorig:leftfoot'])
+        l_hip = find_bone(['l_hip', 'leftupleg', 'mixamorig:leftupleg', 'L_Hip'])
+        l_foot = find_bone(['l_ankle', 'leftfoot', 'mixamorig:leftfoot', 'L_Ankle'])
         
         if l_hip and l_foot:
             leg_len = 0.0
             curr = l_foot
             while curr and curr != l_hip and curr.name not in visited:
+                visited.add(curr.name)
                 pname = curr.parent_name
                 if not pname: break
                 parent = skeleton.get_bone_case_insensitive(pname)
@@ -785,14 +914,12 @@ def get_skeleton_height(skeleton: Skeleton, mapping_dict: dict = None) -> float:
                 curr = parent
             total_len += leg_len
         else:
-            # Fallback: if no leg found, just double the torso (rough)
             total_len *= 2.0
             
         if total_len > 0.1:
-            print(f"[DEBUG] Height via Bone Chain: {total_len:.4f}")
             return total_len
 
-    # 2. Fallback to Y-Range Method (Legacy)
+    # 2. Fallback to Y-Range
     y_min, y_max = 999999.0, -999999.0
     found_any = False
     for _, bone in skeleton.bones.items():
@@ -803,79 +930,499 @@ def get_skeleton_height(skeleton: Skeleton, mapping_dict: dict = None) -> float:
         found_any = True
             
     if not found_any or y_max <= y_min: return 1.0
-    print(f"[DEBUG] Height via Y-Range: {y_max - y_min:.4f}")
     return y_max - y_min
 
 def load_bone_mapping(filepath: str, src_skel: Skeleton, tgt_skel: Skeleton) -> dict[str, str]:
-    mapping = BASE_BONE_MAPPING.copy()
-    if not filepath or not os.path.exists(filepath):
-        print(f"Using hardcoded bone mappings (no JSON file needed)")
-        return mapping
-        
-    print(f"Loading Mapping File: {filepath}")
-    with open(filepath, 'r') as f:
-        data = json.load(f)
-    
-    json_bones = data.get("bones", {})
-    
-    match_count = 0
-    mapped_sources = set()
-    mapped_targets = set()
-    
-    # Strategy: Try to find a source match for the JSON label
-    # We use a custom order: first strictly named joints, then limbs, then fingers
-    def priority_sort(item):
-        k = item[0].lower()
-        if any(x in k for x in ['hip', 'pelvis', 'root']): return 0
-        if any(x in k for x in ['spine', 'neck', 'head']): return 1
-        if any(x in k for x in ['collar', 'shoulder']): return 2
-        if any(x in k for x in ['arm', 'leg', 'foot', 'hand', 'wrist']): return 3
-        return 4
-        
-    print(f"[DEBUG] Target bones ({len(tgt_skel.bones)}): {list(tgt_skel.bones.keys())[:20]}...")
-    sorted_json = sorted(json_bones.items(), key=priority_sort)
+    is_ue5 = filepath and filepath.lower() == "ue5"
+    if not is_ue5:
+        # Auto-detect UE5 based on specific bone names
+        if tgt_skel.get_bone_case_insensitive("clavicle_l") and \
+           tgt_skel.get_bone_case_insensitive("upperarm_l") and \
+           tgt_skel.get_bone_case_insensitive("spine_01"):
+            is_ue5 = True
+            print("[Retarget] Auto-detected UE5 skeleton structure.")
 
+    mapping = {} if is_ue5 else BASE_BONE_MAPPING.copy()
+    if is_ue5:
+        # Pass the flag through the mapping for the animation retargeter
+        mapping["__preset__"] = "ue5"
+    
+    # Check if target is UniRig (ArticulationXL) - look for any bone_X pattern
+    is_unirig = False
+    if not is_ue5:
+        is_unirig = tgt_skel.get_bone_case_insensitive("bone_0") is not None
+        if not is_unirig:
+            # Check for any bone_X naming pattern
+            is_unirig = any("bone_" in name.lower() for name in tgt_skel.bones.keys())
+    
+    json_bones = {}
+    if is_ue5:
+        print(f"Detected UE5 mapping preset, using hardcoded UE5 mapping...")
+        json_bones = UE5_MAPPING
+    elif filepath and os.path.exists(filepath):
+        print(f"Loading Mapping File: {filepath}")
+        with open(filepath, 'r') as f:
+            data = json.load(f)
+        json_bones = data.get("bones", {})
+    elif is_unirig:
+        # Try to find unirig.json in the same directory as this script
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        unirig_json_path = os.path.join(script_dir, "unirig.json")
+        if os.path.exists(unirig_json_path):
+            print(f"Detected UniRig target, loading mapping from: {unirig_json_path}")
+            with open(unirig_json_path, 'r') as f:
+                data = json.load(f)
+            json_bones = data.get("bones", {})
+        else:
+            print(f"Detected UniRig target, using hardcoded articulation mapping...")
+            json_bones = ARTICULATION_MAPPING
+    else:
+        if not filepath:
+            print(f"Using hardcoded bone mappings (no JSON file needed)")
+        # Don't return early - still try structural BFS!
+
+    match_count = 0
+    mapped_targets = set()
+    mapped_sources = set()
+    
+    # Strategy: 
+    # 1. Name-based matching for stable semantic names.
+    # 2. Geometric matching for everything else (especially UniRig bone_X).
+    
+    # Pre-calculate heights for normalization
+    src_h = get_skeleton_height(src_skel)
+    tgt_h = get_skeleton_height(tgt_skel)
+    if src_h < 0.01: src_h = 1.0
+    if tgt_h < 0.01: tgt_h = 1.0
+    
+    sorted_json = sorted(json_bones.items())
+
+    # Phase 1: Semantic Name Matching (High Confidence)
     for gen_name, aliases in sorted_json:
         if not isinstance(aliases, list): aliases = [aliases]
-        search_list = [gen_name] + aliases
         
-        best_tgt = None
-        for a in search_list:
+        # Find Source Bone (Robust Search)
+        source_bone = src_skel.get_bone_case_insensitive(gen_name)
+        if not source_bone:
+            # Try specific source aliases for UE5 if active
+            if is_ue5 and gen_name in UE5_SOURCE_ALIASES:
+                for sa in UE5_SOURCE_ALIASES[gen_name]:
+                    found = src_skel.get_bone_case_insensitive(sa)
+                    if found:
+                        source_bone = found
+                        break
+            
+            # Standard fuzzy aliases (only if not found via UE5 specific ones)
+            if not source_bone:
+                lower_gen = gen_name.lower()
+                search_group = []
+                if lower_gen in FUZZY_ALIASES:
+                    search_group = [lower_gen] + FUZZY_ALIASES[lower_gen]
+                else:
+                    for k, v in FUZZY_ALIASES.items():
+                        if lower_gen in v:
+                            search_group = [k] + v
+                            break
+                for sa in search_group:
+                    found = src_skel.get_bone_case_insensitive(sa)
+                    if found:
+                        source_bone = found
+                        break
+        
+        if not source_bone: continue
+
+        # Find Target Bone (Semantic Match)
+        # For UE5/Presets, we allow mapping ONE source bone to MULTIPLE target bones (chains)
+        found_names = []
+        for a in aliases:
+            if is_unirig and a.startswith("bone_") and a != "bone_0":
+                continue # Skip unstable UniRig indices for name matching
+            
             found = tgt_skel.get_bone_case_insensitive(a)
             if found:
-                if found.name not in mapped_targets:
-                    best_tgt = found.name
-                break
+                found_names.append(found.name)
+                if not is_ue5: break # Only UE5/Chains need multiple targets
         
-        if not best_tgt: continue
+        if found_names and source_bone.name.lower() not in mapped_sources:
+            mapping[source_bone.name.lower()] = found_names
+            match_count += len(found_names)
+            for fn in found_names:
+                mapped_targets.add(fn)
+            mapped_sources.add(source_bone.name.lower())
 
-        best_src = None
-        # 1. Direct Search
-        for a in search_list:
-            found = src_skel.get_bone_case_insensitive(a)
-            if found:
-                if found.name not in mapped_sources:
-                    best_src = found.name
-                break
+    print(f"[Retarget] load_bone_mapping: Found {match_count} matches via semantic names.")
+    
+    if is_ue5:
+        print(f"[Retarget] UE5 preset active: Skipping structural matching and returning explicit mapping ({len(mapping)} bones).")
+        return mapping
+
+    # Phase 2: Structural BFS Matching (Hierarchy-Aware)
+    # We start from the root and traverse down
+    # Helper to check if a bone is a finger
+    def is_finger(name):
+        n = name.lower()
+        return any(k in n for k in ['thumb', 'index', 'middle', 'ring', 'pinky', 'finger'])
+
+    # Helper to find root/pelvis bone in target skeleton
+    def find_target_root(skel):
+        """Find the root/pelvis bone using multiple fallback strategies."""
         
-        # 2. Fuzzy Search specifically targeting the GENERIC name (e.g. "leftUpLeg")
-        if not best_src:
-            for rep_name in [gen_name] + aliases:
-                # Ignore raw "bone_X" for source searching
-                if rep_name.lower().startswith("bone_") and len(rep_name) < 8: continue
-                best_f, confidence = find_best_bone_match(rep_name, src_skel, mapped_sources, require_side_match=True)
-                if best_f and confidence >= 0.3:
-                    best_src = best_f
-                    break
-
-        if best_src and best_tgt:
-            mapping[best_src.lower()] = best_tgt.lower()
-            match_count += 1
-            mapped_sources.add(best_src.lower())
-            mapped_targets.add(best_tgt.lower())
-            # print(f"  [JSON MATCH] {best_src} -> {best_tgt} (via {gen_name})")
+        # Strategy 1: Look for bone_0 (UniRig standard)
+        root = skel.get_bone_case_insensitive("bone_0")
+        if root:
+            print(f"[Retarget] Found target root via 'bone_0': {root.name}")
+            return root
+        
+        # Strategy 2: Name-based detection
+        root_names = ['pelvis', 'hips', 'root', 'cog', 'center', 'base', 'spine_01', 'hip']
+        for rn in root_names:
+            root = skel.get_bone_case_insensitive(rn)
+            if root:
+                print(f"[Retarget] Found target root via name '{rn}': {root.name}")
+                return root
+        
+        # Strategy 3: Topological detection - find bone with most children/descendants
+        best_root = None
+        best_score = -1
+        for name, bone in skel.bones.items():
+            children = skel.get_children(name)
+            if not children: continue
             
-    print(f"[Retarget] load_bone_mapping: Found {match_count} matches in JSON.")
+            # Count descendants recursively
+            def count_descendants(bone_name, visited=None):
+                if visited is None: visited = set()
+                if bone_name in visited: return 0
+                visited.add(bone_name)
+                children = skel.get_children(bone_name)
+                count = len(children)
+                for c in children:
+                    count += count_descendants(c.name, visited)
+                return count
+            
+            descendant_count = count_descendants(name)
+            child_count = len(children)
+            
+            # Score: prefer bones with 3+ children (spine + 2 legs) and many descendants
+            score = child_count * 10 + descendant_count
+            if child_count >= 3: score += 100  # Bonus for typical root structure
+            
+            if score > best_score:
+                best_score = score
+                best_root = bone
+        
+        if best_root:
+            print(f"[Retarget] Found target root via topology (score {best_score}): {best_root.name}")
+            return best_root
+        
+        # Strategy 4: Geometric detection - find bone closest to center with children on both sides
+        center_y = 0
+        for bone in skel.bones.values():
+            center_y = max(center_y, bone.head[1])
+        center_y /= 2  # Approximate vertical center
+        
+        for name, bone in skel.bones.items():
+            children = skel.get_children(bone)
+            if len(children) < 2: continue
+            
+            # Check if children spread both left and right
+            has_left = any(c.head[0] < bone.head[0] - 0.05 for c in children)
+            has_right = any(c.head[0] > bone.head[0] + 0.05 for c in children)
+            
+            if has_left and has_right:
+                print(f"[Retarget] Found target root via geometry (bilateral children): {bone.name}")
+                return bone
+        
+        print(f"[Retarget] WARNING: Could not find target root bone!")
+        return None
+
+    src_root = src_skel.get_bone_case_insensitive("Pelvis")
+    tgt_root = find_target_root(tgt_skel)
+    
+    if src_root and tgt_root:
+        print(f"[Retarget] Starting Structural BFS Matching from {src_root.name} -> {tgt_root.name}...")
+        
+        # Queue of (src_bone, tgt_bone) pairs to explore children of
+        queue = [(src_root, tgt_root)]
+        
+        while queue:
+            s_parent, t_parent = queue.pop(0)
+            
+            s_children = src_skel.get_children(s_parent.name)
+            t_children = tgt_skel.get_children(t_parent.name)
+            
+            if not s_children or not t_children: continue
+            
+            # Filter out fingers if requested
+            s_children = [c for c in s_children if not is_finger(c.name)]
+            t_children = [c for c in t_children if not is_finger(c.name)]
+            
+            # Side matching check
+            def get_side(v, name):
+                n = name.lower()
+                if "left" in n or "l_" in n or ".l" in n: return -1
+                if "right" in n or "r_" in n or ".r" in n: return 1
+                if abs(v[0]) < 0.05 * (tgt_h if v is t_rel else src_h): return 0 # Height-relative threshold
+                return 1 if v[0] > 0 else -1
+
+            # Match children of s_parent to children of t_parent
+            for tc in t_children:
+                if tc.name in mapped_targets: continue
+                
+                best_sc = None
+                best_score = 999999.0
+                
+                # 1. Try Name-based Hint (Fuzzy)
+                # Check if any source child matches tc's name or its semantic meaning
+                for sc in s_children:
+                    if sc.name.lower() in mapped_sources: continue
+                    
+                    # Check if sc name matches tc name (fuzzy)
+                    # Or if sc name matches the gen_name associated with tc in unirig.json
+                    is_match = False
+                    if sc.name.lower() == tc.name.lower(): is_match = True
+                    else:
+                        for gen_name, aliases in json_bones.items():
+                            if sc.name.lower() == gen_name.lower() or sc.name.lower() in [a.lower() for a in (aliases if isinstance(aliases, list) else [aliases])]:
+                                if tc.name in (aliases if isinstance(aliases, list) else [aliases]):
+                                    is_match = True
+                                    break
+                    
+                    if is_match:
+                        best_sc = sc
+                        best_score = 0.0
+                        break
+                
+                # 2. Geometric Fallback
+                if not best_sc:
+                    t_rel = tc.head - t_parent.head
+                    t_side = get_side(t_rel, tc.name)
+                    
+                    for sc in s_children:
+                        if sc.name.lower() in mapped_sources: continue
+                        
+                        s_rel = sc.head - s_parent.head
+                        s_side = get_side(s_rel, sc.name)
+                        t_rel_norm = t_rel / tgt_h
+                        s_rel_norm = s_rel / src_h
+                        
+                        dist = np.linalg.norm(t_rel_norm - s_rel_norm)
+                        
+                        # Relaxed side matching for limb chains
+                        if t_side != s_side and dist > 0.2: continue
+
+                        if dist < best_score:
+                            best_score = dist
+                            best_sc = sc
+                
+                # 3. Single-child Fallback: If target has exactly 1 unmatched child and source has 1 unmatched child, force match
+                if not best_sc and len(t_children) == 1 and len([c for c in s_children if c.name.lower() not in mapped_sources]) == 1:
+                    remaining_s = [c for c in s_children if c.name.lower() not in mapped_sources][0]
+                    best_sc = remaining_s
+                    best_score = 0.99  # Mark as forced match
+                
+                # Increased threshold from 0.5 to 1.0 to allow more matches in limb chains
+                if best_sc and best_score < 1.0:
+                    mapping[best_sc.name.lower()] = tc.name
+                    mapped_targets.add(tc.name)
+                    mapped_sources.add(best_sc.name.lower())
+                    match_count += 1
+                    queue.append((best_sc, tc))
+                    print(f"[DEBUG] Structural Match: {best_sc.name} -> {tc.name} (score: {best_score:.3f})")
+
+        print(f"[Retarget] Structural BFS Matching complete. Total matches: {match_count}")
+
+    # Phase 3: Hand and Finger Mapping (Phase 2 of the plan)
+    # Identify mapped wrists and explore their children
+    wrists = [('L_Wrist', ['left', 'l_']), ('R_Wrist', ['right', 'r_'])]
+    for wrist_gen_name, side_keys in wrists:
+        # Find the mapped target wrist
+        target_wrist_name = None
+        source_wrist_name = None
+        
+        # Look for the wrist in the current mapping
+        # We need to find a match where both bones actually exist in the skeletons
+        for s_name, t_name in mapping.items():
+            s_lower = s_name.lower()
+            if any(k in s_lower for k in ['wrist', 'hand']):
+                if any(sk in s_lower for sk in side_keys):
+                    # Check if bones exist
+                    s_bone = src_skel.get_bone_case_insensitive(s_name)
+                    t_bone = tgt_skel.get_bone_case_insensitive(t_name)
+                    if s_bone and t_bone:
+                        source_wrist_name = s_name
+                        target_wrist_name = t_name
+                        break
+        
+        if not target_wrist_name:
+            continue
+        
+        s_wrist = src_skel.get_bone_case_insensitive(source_wrist_name)
+        t_wrist = tgt_skel.get_bone_case_insensitive(target_wrist_name)
+        
+        if not s_wrist or not t_wrist: continue
+        
+        s_fingers = [c for c in src_skel.get_children(s_wrist.name) if is_finger(c.name)]
+        t_fingers = [c for c in tgt_skel.get_children(t_wrist.name)] # All children of target wrist are likely fingers
+        
+        if not t_fingers:
+            continue
+        
+        # Case A: Single-Finger Rig (e.g. SK_tira)
+        if len(t_fingers) == 1:
+            # Map source Middle finger to this single target finger
+            # Find source middle finger
+            src_middle = None
+            for sf in s_fingers:
+                if 'middle' in sf.name.lower():
+                    src_middle = sf
+                    break
+            if not src_middle and s_fingers: src_middle = s_fingers[len(s_fingers)//2] # Fallback to middle-ish
+            
+            if src_middle:
+                mapping[src_middle.name.lower()] = t_fingers[0].name
+                mapped_targets.add(t_fingers[0].name)
+                mapped_sources.add(src_middle.name.lower())
+                match_count += 1
+                
+                # Recursively map down the chain
+                s_curr, t_curr = src_middle, t_fingers[0]
+                while True:
+                    s_next = [c for c in src_skel.get_children(s_curr.name) if is_finger(c.name)]
+                    t_next = tgt_skel.get_children(t_curr.name)
+                    if not s_next or not t_next: break
+                    
+                    mapping[s_next[0].name.lower()] = t_next[0].name
+                    mapped_targets.add(t_next[0].name)
+                    mapped_sources.add(s_next[0].name.lower())
+                    match_count += 1
+                    s_curr, t_curr = s_next[0], t_next[0]
+
+        # Case B: Multi-Finger Rig
+        else:
+            # Use geometric matching relative to wrist
+            for tf in t_fingers:
+                if tf.name in mapped_targets: continue
+                
+                best_sf = None
+                best_score = 999999.0
+                t_rel = tf.head - t_wrist.head
+                
+                for sf in s_fingers:
+                    if sf.name.lower() in mapped_sources: continue
+                    t_rel_norm = t_rel / tgt_h
+                    s_rel_norm = s_rel / src_h
+                    dist = np.linalg.norm(t_rel_norm - s_rel_norm)
+                    if dist < best_score:
+                        best_score = dist
+                        best_sf = sf
+                
+                if best_sf and best_score < 0.3:
+                    mapping[best_sf.name.lower()] = tf.name
+                    mapped_targets.add(tf.name)
+                    mapped_sources.add(best_sf.name.lower())
+                    match_count += 1
+                    
+                    # Recursively map down the chain
+                    s_curr, t_curr = best_sf, tf
+                    while True:
+                        s_next = [c for c in src_skel.get_children(s_curr.name) if is_finger(c.name)]
+                        t_next = tgt_skel.get_children(t_curr.name)
+                        if not s_next or not t_next: break
+                        
+                        mapping[s_next[0].name.lower()] = t_next[0].name
+                        mapped_targets.add(t_next[0].name)
+                        mapped_sources.add(s_next[0].name.lower())
+                        match_count += 1
+                        s_curr, t_curr = s_next[0], t_next[0]
+
+    # Phase 4: Arm Fallback Detection
+    # If arms were not mapped via structural BFS, try to find them using alternative strategies
+    arm_bones = ['collar', 'shoulder', 'elbow', 'wrist']
+    for side, side_keys in [('L', ['left', 'l_']), ('R', ['right', 'r_'])]:
+        # Check if this side's arm is already mapped
+        side_arm_mapped = any(
+            any(sk in s.lower() for sk in side_keys) and any(ab in s.lower() for ab in arm_bones)
+            for s in mapped_sources
+        )
+        
+        if side_arm_mapped:
+            continue  # Already mapped via BFS
+        
+        print(f"[Retarget] Arm Fallback: Searching for {side} arm...")
+        
+        # Find source arm chain
+        src_collar = src_skel.get_bone_case_insensitive(f"{side}_Collar")
+        if not src_collar:
+            continue
+        
+        # Strategy 1: Find target bones by name hints
+        for ab in arm_bones:
+            src_bone = src_skel.get_bone_case_insensitive(f"{side}_{ab.capitalize()}")
+            if not src_bone or src_bone.name.lower() in mapped_sources:
+                continue
+            
+            # Find unmapped target bone with similar name or position
+            best_tgt = None
+            best_score = 999999.0
+            
+            for t_name, t_bone in tgt_skel.bones.items():
+                if t_name in mapped_targets:
+                    continue
+                
+                # Skip non-skeleton nodes (root containers, meshes, etc.)
+                t_lower = t_name.lower()
+                excluded_names = ['armature', 'character', 'root', 'scene', 'skeleton', 'rig']
+                if any(ex == t_lower or t_lower.startswith(ex + '_') for ex in excluded_names):
+                    continue
+                t_lower = t_name.lower()
+                if ab in t_lower:
+                    # Check side
+                    if any(sk in t_lower for sk in side_keys):
+                        best_tgt = t_bone
+                        best_score = 0.0
+                        break
+                
+                # Geometric fallback: find bone with similar relative position
+                # Use position relative to a common reference (pelvis)
+                src_pelvis = src_skel.get_bone_case_insensitive("Pelvis")
+                tgt_pelvis_bone = None
+                for mapped_s, mapped_t in mapping.items():
+                    if 'pelvis' in mapped_s.lower():
+                        if isinstance(mapped_t, list):
+                            for t_name in mapped_t:
+                                tgt_pelvis_bone = tgt_skel.get_bone_case_insensitive(t_name)
+                                if tgt_pelvis_bone:
+                                    break
+                        else:
+                            tgt_pelvis_bone = tgt_skel.get_bone_case_insensitive(mapped_t)
+                        if tgt_pelvis_bone:
+                            break
+                
+                if src_pelvis and tgt_pelvis_bone:
+                    src_rel = (src_bone.head - src_pelvis.head) / src_h
+                    tgt_rel = (t_bone.head - tgt_pelvis_bone.head) / tgt_h
+                    
+                    # Check side consistency
+                    src_side = 1 if src_rel[0] > 0.05 else (-1 if src_rel[0] < -0.05 else 0)
+                    tgt_side = 1 if tgt_rel[0] > 0.05 else (-1 if tgt_rel[0] < -0.05 else 0)
+                    
+                    if src_side != tgt_side:
+                        continue
+                    
+                    dist = np.linalg.norm(src_rel - tgt_rel)
+                    if dist < best_score:
+                        best_score = dist
+                        best_tgt = t_bone
+            
+            if best_tgt and best_score < 1.0:
+                if src_bone.name.lower() not in mapped_sources and best_tgt.name not in mapped_targets:
+                    mapping[src_bone.name.lower()] = best_tgt.name
+                    mapped_targets.add(best_tgt.name)
+                    mapped_sources.add(src_bone.name.lower())
+                    match_count += 1
+                    print(f"[DEBUG] Arm Fallback Match: {src_bone.name} -> {best_tgt.name} (score: {best_score:.3f})")
+
+    print(f"[Retarget] Final load_bone_mapping: Found {match_count} total matches.")
     return mapping
 
 def get_fbx_rotation_order_str(node: fbx.FbxNode) -> str:
@@ -916,8 +1463,13 @@ def collect_skeleton_nodes(node: fbx.FbxNode, skeleton: Skeleton, immediate_pare
         elif at == 2 and (node.GetChildCount() > 0 or immediate_parent): is_bone = True
     
     name_lower = node_name.lower()
-    keywords = ['hips', 'hip', 'spine', 'neck', 'head', 'arm', 'leg', 'foot', 'ankle', 'knee', 'shoulder', 'elbow', 'pelvis', 'joint', 'mixamo', 'thigh', 'upper', 'forearm', 'hand', 'finger', 'clavicle', 'collar', 'toe', 'thumb', 'index', 'middle', 'ring', 'pinky', 'upleg', 'downleg', 'wrist', 'chest', 'belly', 'bone_', 'character']
-    if any(k in name_lower for k in keywords): is_bone = True
+    keywords = ['hips', 'hip', 'spine', 'neck', 'head', 'arm', 'leg', 'foot', 'ankle', 'knee', 'shoulder', 'elbow', 'pelvis', 'joint', 'mixamo', 'thigh', 'upper', 'forearm', 'hand', 'finger', 'clavicle', 'collar', 'toe', 'thumb', 'index', 'middle', 'ring', 'pinky', 'upleg', 'downleg', 'wrist', 'chest', 'belly', 'bone_', 'character', 'calf', 'ball']
+    if any(k in name_lower for k in keywords): 
+        is_bone = True
+    
+    # Explicitly ignore IK bones for UE5 and other skeletons
+    if 'ik_' in name_lower or '_ik' in name_lower:
+        is_bone = False
     
     if is_bone:
         existing = skeleton.get_bone_case_insensitive(node_name)
@@ -971,33 +1523,13 @@ def extract_animation(scene: FbxScene, skeleton: Skeleton):
     sample(scene.GetRootNode())
 
 def load_fbx(filepath: str, sample_rest_frame: int = None):
-    print(f"[Retarget] Loading FBX: {filepath}")
-    if not os.path.exists(filepath):
-        print(f"[Retarget] ERROR: File not found: {filepath}")
-        return None, None, None
-
     manager = fbx.FbxManager.Create()
-    if not manager:
-        print("[Retarget] ERROR: Failed to create FbxManager")
-        return None, None, None
-
-    # Create IO settings - CRITICAL for stability
-    ios = fbx.FbxIOSettings.Create(manager, fbx.IOSROOT)
-    manager.SetIOSettings(ios)
-    
     importer = fbx.FbxImporter.Create(manager, "")
-    if not importer.Initialize(filepath, -1, ios):
-        print(f"[Retarget] ERROR: Importer initialization failed: {importer.GetStatus().GetErrorString()}")
-        manager.Destroy()
+    if not importer.Initialize(filepath, -1, manager.GetIOSettings()):
         return None, None, None
         
     scene = fbx.FbxScene.Create(manager, "")
-    if not importer.Import(scene):
-        print(f"[Retarget] ERROR: Scene import failed: {importer.GetStatus().GetErrorString()}")
-        importer.Destroy()
-        manager.Destroy()
-        return None, None, None
-    
+    importer.Import(scene)
     importer.Destroy()
     
     # Pre-extract Bind Pose into a global map for total consistency
@@ -1104,6 +1636,10 @@ def apply_retargeted_animation(scene, skeleton, ret_rots, ret_locs, fstart, fend
 
 def retarget_animation(src_skel: Skeleton, tgt_skel: Skeleton, mapping: dict[str, str], force_scale: float = 0.0, yaw_offset: float = 0.0, neutral_fingers: bool = True, in_place: bool = False):
     print("Retargeting Animation...")
+    is_ue5 = mapping.get("__preset__") == "ue5"
+    # Remove internal flag from mapping
+    mapping = {k: v for k, v in mapping.items() if k != "__preset__"}
+    
     ret_rots = {}
     ret_locs = {}
     
@@ -1115,30 +1651,36 @@ def retarget_animation(src_skel: Skeleton, tgt_skel: Skeleton, mapping: dict[str
     mapped_targets = set()
     mapped_sources = set()
 
-    for s_key, t_key in mapping.items():
+    for s_key, t_val in mapping.items():
         s_bone = src_skel.get_bone_case_insensitive(s_key)
-        t_bone = tgt_skel.get_bone_case_insensitive(t_key)
+        if not s_bone: continue
         
-        if s_bone and t_bone:
-            # Skip if either bone is already part of a mapping
-            if t_bone.name.lower() in mapped_targets or s_bone.name.lower() in mapped_sources:
-                continue
+        # Support both single target string and list of multiple targets (for chains)
+        t_keys = [t_val] if isinstance(t_val, str) else t_val
+        
+        for t_key in t_keys:
+            t_bone = tgt_skel.get_bone_case_insensitive(t_key)
+            if t_bone:
+                # Skip if target bone is already part of a mapping
+                if t_bone.name.lower() in mapped_targets:
+                    continue
 
-            s_rest = s_bone.rest_rotation
-            
-            # NEUTRAL FINGERS: If the source is in a curled pose, it 'cancels out' the motion.
-            if neutral_fingers:
-                is_finger = any(f in s_bone.name.lower() for f in ['index', 'middle', 'ring', 'pinky', 'thumb', 'toe'])
-                if is_finger:
-                    pname = s_bone.parent_name
-                    p_bone = src_skel.get_bone_case_insensitive(pname)
-                    if p_bone:
-                        s_rest = p_bone.rest_rotation
-            
-            off = quaternion_multiply(quaternion_inverse(s_rest), t_bone.rest_rotation)
-            active.append((s_bone, t_bone, off))
-            mapped_targets.add(t_bone.name.lower())
-            mapped_sources.add(s_bone.name.lower())
+                s_rest = s_bone.rest_rotation
+                
+                # NEUTRAL FINGERS: If the source is in a curled pose, it 'cancels out' the motion.
+                if neutral_fingers:
+                    is_finger = any(f in s_bone.name.lower() for f in ['index', 'middle', 'ring', 'pinky', 'thumb', 'toe'])
+                    if is_finger:
+                        pname = s_bone.parent_name
+                        p_bone = src_skel.get_bone_case_insensitive(pname)
+                        if p_bone:
+                            s_rest = p_bone.rest_rotation
+                
+                off = quaternion_multiply(quaternion_inverse(s_rest), t_bone.rest_rotation)
+                active.append((s_bone, t_bone, off))
+                mapped_targets.add(t_bone.name.lower())
+        
+        mapped_sources.add(s_bone.name.lower())
             
     # 2. Smart fuzzy matching for unmapped bones using advanced algorithm
     # Sort target bones: Hips/Root first, then limbs, then fingers
@@ -1155,40 +1697,43 @@ def retarget_animation(src_skel: Skeleton, tgt_skel: Skeleton, mapping: dict[str
     # Track matches with confidence scores for reporting
     fuzzy_matches = []
     
-    for t_bone in tgt_list:
-        if t_bone.name.lower() in mapped_targets:
-            continue
-        
-        # Use the advanced bone matching system
-        best_source_name, confidence = find_best_bone_match(
-            t_bone.name,
-            src_skel,
-            mapped_sources,
-            require_side_match=True
-        )
-        
-        # Accept match if confidence is above threshold
-        if best_source_name and confidence >= 0.5:  # 50% confidence minimum
-            s_bone = src_skel.bones[best_source_name]
-            
-            #Ensure this source bone hasn't been mapped yet
-            if s_bone.name.lower() in mapped_sources:
+    # 2. Smart fuzzy matching for unmapped bones using advanced algorithm
+    # DISABLED for UE5 to ensure ONLY the requested 52 bones are mapped.
+    if not is_ue5:
+        for t_bone in tgt_list:
+            if t_bone.name.lower() in mapped_targets:
                 continue
             
-            s_rest = s_bone.rest_rotation
-            if neutral_fingers:
-                is_finger = any(f in s_bone.name.lower() for f in ['index', 'middle', 'ring', 'pinky', 'thumb', 'toe'])
-                if is_finger:
-                    pname = s_bone.parent_name
-                    p_bone = src_skel.get_bone_case_insensitive(pname)
-                    if p_bone:
-                        s_rest = p_bone.rest_rotation
+            # Use the advanced bone matching system
+            best_source_name, confidence = find_best_bone_match(
+                t_bone.name,
+                src_skel,
+                mapped_sources,
+                require_side_match=True
+            )
+            
+            # Accept match if confidence is above threshold
+            if best_source_name and confidence >= 0.5:  # 50% confidence minimum
+                s_bone = src_skel.bones[best_source_name]
+                
+                #Ensure this source bone hasn't been mapped yet
+                if s_bone.name.lower() in mapped_sources:
+                    continue
+                
+                s_rest = s_bone.rest_rotation
+                if neutral_fingers:
+                    is_finger = any(f in s_bone.name.lower() for f in ['index', 'middle', 'ring', 'pinky', 'thumb', 'toe'])
+                    if is_finger:
+                        pname = s_bone.parent_name
+                        p_bone = src_skel.get_bone_case_insensitive(pname)
+                        if p_bone:
+                            s_rest = p_bone.rest_rotation
 
-            off = quaternion_multiply(quaternion_inverse(s_rest), t_bone.rest_rotation)
-            active.append((s_bone, t_bone, off))
-            mapped_sources.add(s_bone.name.lower())
-            mapped_targets.add(t_bone.name.lower())
-            fuzzy_matches.append((s_bone.name, t_bone.name, confidence))
+                off = quaternion_multiply(quaternion_inverse(s_rest), t_bone.rest_rotation)
+                active.append((s_bone, t_bone, off))
+                mapped_sources.add(s_bone.name.lower())
+                mapped_targets.add(t_bone.name.lower())
+                fuzzy_matches.append((s_bone.name, t_bone.name, confidence))
     
     # Print mapping results with confidence scores
     print(f"\n[Retarget] Bone Mapping Results:")
@@ -1196,7 +1741,7 @@ def retarget_animation(src_skel: Skeleton, tgt_skel: Skeleton, mapping: dict[str
     if fuzzy_matches:
         print(f"  Fuzzy matched: {len(fuzzy_matches)} bones")
         for s_name, t_name, conf in fuzzy_matches:
-            print(f"    {s_name} -> {t_name} (confidence: {conf:.2f})")
+            print(f"    {s_name} → {t_name} (confidence: {conf:.2f})")
             
     print(f"DEBUG: Final Mapping Count: {len(active)} bones")
     # Sort for cleaner debug output
@@ -1204,8 +1749,8 @@ def retarget_animation(src_skel: Skeleton, tgt_skel: Skeleton, mapping: dict[str
     for s, t, _ in final_mappings:
         print(f"  - {s.name} -> {t.name}")
             
-    src_h = get_skeleton_height(src_skel, mapping)
-    tgt_h = get_skeleton_height(tgt_skel, mapping)
+    src_h = get_skeleton_height(src_skel)
+    tgt_h = get_skeleton_height(tgt_skel)
     print(f"[DEBUG] Skeleton Heights - Source: {src_h:.4f}, Target: {tgt_h:.4f}")
     scale = force_scale if force_scale > 1e-4 else (tgt_h / src_h if src_h > 0.01 else 1.0)
     print(f"Scale: {scale:.4f}")
@@ -1237,27 +1782,41 @@ def retarget_animation(src_skel: Skeleton, tgt_skel: Skeleton, mapping: dict[str
     
     s_lhip = src_skel.get_bone_case_insensitive('l_hip')
     s_rhip = src_skel.get_bone_case_insensitive('r_hip')
-    t_lhip = tgt_skel.get_bone_case_insensitive('l_hip')
-    t_rhip = tgt_skel.get_bone_case_insensitive('r_hip')
+    s_pelvis = src_skel.get_bone_case_insensitive('pelvis') or src_skel.get_bone_case_insensitive('hips')
+    
+    t_lhip = tgt_skel.get_bone_case_insensitive('l_hip') or tgt_skel.get_bone_case_insensitive('thigh_l')
+    t_rhip = tgt_skel.get_bone_case_insensitive('r_hip') or tgt_skel.get_bone_case_insensitive('thigh_r')
     
     # We need a root bone for displacement reference
     root_bone_name = None
     s_root_bone = None
-    for s_bone, t_bone, _ in active:
-        if any(x in t_bone.name.lower() or x in s_bone.name.lower() for x in ['hips', 'pelvis', 'root', 'center', 'cog']):
-            root_bone_name = t_bone.name
+    for s_bone, t_bone_val, _ in active:
+        # Handle list or single bone
+        if isinstance(t_bone_val, list):
+            t_bone_list = [b for b in t_bone_val if b is not None]
+        else:
+            t_bone_list = [t_bone_val] if t_bone_val is not None else []
+            
+        if not t_bone_list: continue
+        tb_name = t_bone_list[0].name
+        sb_name = s_bone.name
+        if any(x in tb_name.lower() or x in sb_name.lower() for x in ['pelvis', 'hips', 'root', 'center', 'cog']):
+            root_bone_name = tb_name
             s_root_bone = s_bone
             break
 
-    if s_lhip and s_rhip and t_lhip and t_rhip and s_root_bone:
-        
+    if s_lhip and s_rhip and t_lhip and t_rhip:
         # Construct Source Frame (Rest Pose)
-        s_spine = src_skel.get_bone_case_insensitive('spine') or src_skel.get_bone_case_insensitive('spine1') or src_skel.get_bone_case_insensitive('Spine1')
-        s_up = (s_spine.world_matrix[3, :3] - s_root_bone.world_matrix[3, :3]) if s_spine else np.array([0, 1, 0])
+        s_spine = src_skel.get_bone_case_insensitive('spine3') or src_skel.get_bone_case_insensitive('spine2') or src_skel.get_bone_case_insensitive('spine')
+        # Use midpoint of hips as the stable base for the vertical vector
+        s_mid_hip = (s_lhip.world_matrix[3, :3] + s_rhip.world_matrix[3, :3]) * 0.5
+        s_up = (s_spine.world_matrix[3, :3] - s_mid_hip) if s_spine else np.array([0, 1, 0])
 
+        # Side vector is the primary axis for arm leveling
         s_side = s_rhip.world_matrix[3, :3] - s_lhip.world_matrix[3, :3]
         s_fwd = np.cross(s_side, s_up)
-        s_up = np.cross(s_fwd, s_side) # Orthogonalize
+        # Re-calculate Up to be strictly orthogonal to Side and Forward
+        s_up = np.cross(s_fwd, s_side) 
         
         s_fwd /= (np.linalg.norm(s_fwd) + 1e-9)
         s_up /= (np.linalg.norm(s_up) + 1e-9)
@@ -1265,10 +1824,10 @@ def retarget_animation(src_skel: Skeleton, tgt_skel: Skeleton, mapping: dict[str
         s_mat = np.stack((s_side, s_up, s_fwd), axis=-1)
         
         # Construct Target Frame (Rest Pose)
-        # Use a more stable Up vector (Pelvis to Spine/Head)
-        t_spine = tgt_skel.get_bone_case_insensitive('spine') or tgt_skel.get_bone_case_insensitive('spine1')
-        t_root_bone = tgt_skel.get_bone_case_insensitive(root_bone_name)
-        t_up = (t_spine.world_matrix[3, :3] - t_root_bone.world_matrix[3, :3]) if t_spine else t_up_axis
+        t_spine = tgt_skel.get_bone_case_insensitive('spine_05') or tgt_skel.get_bone_case_insensitive('spine_03') or tgt_skel.get_bone_case_insensitive('spine')
+        t_mid_hip = (t_lhip.world_matrix[3, :3] + t_rhip.world_matrix[3, :3]) * 0.5
+        
+        t_up = (t_spine.world_matrix[3, :3] - t_mid_hip) if t_spine else t_up_axis
         t_side = t_rhip.world_matrix[3, :3] - t_lhip.world_matrix[3, :3]
         t_fwd = np.cross(t_side, t_up)
         t_up = np.cross(t_fwd, t_side) # Orthogonalize
@@ -1278,53 +1837,79 @@ def retarget_animation(src_skel: Skeleton, tgt_skel: Skeleton, mapping: dict[str
         t_side /= (np.linalg.norm(t_side) + 1e-9)
         t_mat = np.stack((t_side, t_up, t_fwd), axis=-1)
         
-        # Map Source Frame to Target Space via coord_q
-        s_mat_tgt = coord_q.as_matrix() @ s_mat
-        
-        # Find rotation that aligns Source Frame (in Target Space) to Target Frame
-        # R_s_tgt * R_align = R_t  => R_align = R_s_tgt_inv * R_t
-        s_rot_tgt = R.from_matrix(s_mat_tgt)
-        t_rot = R.from_matrix(t_mat)
-        realignment_tgt_q = s_rot_tgt.inv() * t_rot
-        
-        print(f"[DEBUG] Pose-Invariant Realignment Applied")
+        # FIXED Realignment Math:
+        # We need R such that R * (coord_q * S) = T
+        # R = T * S^T * coord_q^T
+        real_mat = t_mat @ s_mat.T @ coord_q.as_matrix().T
+        realignment_tgt_q = R.from_matrix(real_mat)
+        real_euler = realignment_tgt_q.as_euler('xyz', degrees=True)
+        print(f"[Retarget] Computed Alignment Matrix (Euler XYZ): {real_euler}")
+        print(f"[DEBUG] Source basis (Side, Up, Fwd):\n{s_mat}")
+        print(f"[DEBUG] Target basis (Side, Up, Fwd):\n{t_mat}")
+    else:
+        print(f"[Retarget] WARNING: Unable to compute alignment matrix - missing hip/thigh bones")
 
-    # Find Target Spine and Hips for dynamic leveling
-    t_spine_bone = tgt_skel.get_bone_case_insensitive('spine') or tgt_skel.get_bone_case_insensitive('spine1') or tgt_skel.get_bone_case_insensitive('chest')
-    t_spine_name = t_spine_bone.name if t_spine_bone else None
-    t_hips_bone = tgt_skel.get_bone_case_insensitive('hips') or tgt_skel.get_bone_case_insensitive('pelvis')
-    
-    t_spine_local_up = np.array([0, 1, 0])
-    if t_spine_bone and t_hips_bone:
-        # Calculate Local Up vector for spine in rest pose
-        # This is the vector from Hips to Spine, transformed into Spine's local space
-        v_up_world = t_spine_bone.head - t_hips_bone.head
-        r_spine_rest = R.from_quat([t_spine_bone.rest_rotation[1], t_spine_bone.rest_rotation[2], t_spine_bone.rest_rotation[3], t_spine_bone.rest_rotation[0]])
-        t_spine_local_up = r_spine_rest.inv().apply(v_up_world)
-        t_spine_local_up /= (np.linalg.norm(t_spine_local_up) + 1e-9)
-        print(f"[DEBUG] Spine Local Up: {t_spine_local_up}")
-
-    # Unified Global Transformation
-    # Order: Coord Map -> Realignment -> User Yaw
+    # Final Global Transformation
     yaw_q = R.from_euler('y' if t_up_axis[1] == 1 else 'z', yaw_offset, degrees=True)
+    # Correct order: Apply coordinate flip, THEN align skeleton basis, THEN apply user yaw
     global_transform_q = yaw_q * realignment_tgt_q * coord_q
     
     gt_q = global_transform_q.as_quat() # [x, y, z, w]
     gt_q_np = np.array([gt_q[3], gt_q[0], gt_q[1], gt_q[2]]) # [w, x, y, z]
-
     # 3. Pass 1: Standard Retargeting for all bones
-    for s_bone, t_bone, _ in active:
-        tgt_world_anims[t_bone.name] = {}
-        s_rest_q = s_bone.rest_rotation
-        s_rest_tgt_q = quaternion_multiply(gt_q_np, s_rest_q)
-        t_rest_q = t_bone.rest_rotation
-        off_q = quaternion_multiply(quaternion_inverse(s_rest_tgt_q), t_rest_q)
+    for s_bone, t_bone_val, _ in active:
+        # Filter None bones out of the list (e.g. if neck_03 doesn't exist)
+        if isinstance(t_bone_val, list):
+            t_bone_list = [b for b in t_bone_val if b is not None]
+        else:
+            t_bone_list = [t_bone_val] if t_bone_val is not None else []
+            
+        if not t_bone_list: continue
         
-        for f in frames:
-            s_rot_f = s_bone.world_animation.get(f, s_rest_q)
-            t_rot_f = quaternion_multiply(gt_q_np, s_rot_f)
-            t_rot_f = quaternion_multiply(t_rot_f, off_q)
-            tgt_world_anims[t_bone.name][f] = t_rot_f
+        num_targets = len(t_bone_list)
+        s_rest_q = s_bone.rest_rotation
+        
+        for i, tb in enumerate(t_bone_list):
+            if tb.name not in tgt_world_anims:
+                tgt_world_anims[tb.name] = {}
+            
+            # Calculate rest pose offset in WORLD space
+            # This captures the T-pose to A-pose difference automatically
+            s_rest_world_q = quaternion_multiply(gt_q_np, s_rest_q)
+            t_rest_world_q = tb.rest_rotation
+            
+            # The offset transforms from source rest to target rest
+            off_q = quaternion_multiply(quaternion_inverse(s_rest_world_q), t_rest_world_q)
+            
+            for f in frames:
+                s_rot_f = s_bone.world_animation.get(f, s_rest_q)
+                
+                # If chain, distribute the relative rotation
+                if num_targets > 1:
+                    # Convert source rotation to euler to divide it
+                    rel_q = quaternion_multiply(quaternion_inverse(s_rest_q), s_rot_f)
+                    rel_r = R.from_quat([rel_q[1], rel_q[2], rel_q[3], rel_q[0]])
+                    
+                    # Instead of euler, use SLERP for safer distribution
+                    # We want to find rel_q ^ ((i+1)/num_targets)
+                    # For stability we just use euler for now as previously done 
+                    # but ensure we handle potential flip issues
+                    euler = rel_r.as_euler('xyz')
+                    dist_euler = euler * ((i + 1) / num_targets)
+                    step_rel_r = R.from_euler('xyz', dist_euler)
+                    
+                    step_rel_q = step_rel_r.as_quat()
+                    step_rel_q = np.array([step_rel_q[3], step_rel_q[0], step_rel_q[1], step_rel_q[2]])
+                    s_rot_f_distributed = quaternion_multiply(s_rest_q, step_rel_q)
+                else:
+                    s_rot_f_distributed = s_rot_f
+
+                # Apply the rotation: GlobalTransform * SourceAnim * Offset
+                # This maps source animation through coordinate system and applies rest-pose correction
+                s_rot_f_world = quaternion_multiply(gt_q_np, s_rot_f_distributed)
+                t_rot_f = quaternion_multiply(s_rot_f_world, off_q)
+                
+                tgt_world_anims[tb.name][f] = t_rot_f
 
 
     # NOTE: Head leveling removed - the head should follow the body naturally
@@ -1333,8 +1918,11 @@ def retarget_animation(src_skel: Skeleton, tgt_skel: Skeleton, mapping: dict[str
     # If the source head has identity rotation while the body is rotated,
     # the head animation was not properly baked. We fix this by inheriting
     # the parent's rotation.
-    for s_bone, t_bone, _ in active:
-        is_head_neck = any(x in t_bone.name.lower() for x in ['head', 'neck'])
+    for s_bone, t_bone_val, _ in active:
+        t_bone_list = t_bone_val if isinstance(t_bone_val, list) else [t_bone_val]
+        # Check if any bone in this mapping is head or neck
+        is_head_neck = any(any(x in tb.name.lower() for x in ['head', 'neck']) for tb in t_bone_list)
+        
         if is_head_neck:
             # Check if the source head is uanimated (stays at rest for all frames)
             s_rest_q = s_bone.rest_rotation
@@ -1357,16 +1945,22 @@ def retarget_animation(src_skel: Skeleton, tgt_skel: Skeleton, mapping: dict[str
                             p_rot_f = p_bone.world_animation.get(f, p_bone.rest_rotation)
                             # Transform to target space
                             p_rot_tgt = quaternion_multiply(gt_q_np, p_rot_f)
-                            # Apply the same offset as we would for the head
-                            off_q = quaternion_multiply(quaternion_inverse(quaternion_multiply(gt_q_np, s_rest_q)), t_bone.rest_rotation)
-                            t_rot_f = quaternion_multiply(p_rot_tgt, off_q)
-                            tgt_world_anims[t_bone.name][f] = t_rot_f
+                            
+                            for tb in t_bone_list:
+                                # Apply the same offset as we would for the head
+                                off_q = quaternion_multiply(quaternion_inverse(quaternion_multiply(gt_q_np, s_rest_q)), tb.rest_rotation)
+                                t_rot_f = quaternion_multiply(p_rot_tgt, off_q)
+                                tgt_world_anims[tb.name][f] = t_rot_f
 
 
     # 5. Displacement and Local Rotations
-    for s_bone, t_bone, _ in active:
-        if t_bone.name == root_bone_name:
-            ret_locs[t_bone.name] = {}
+    for s_bone, t_bone_val, _ in active:
+        # Handle list or single bone
+        t_bone_list = t_bone_val if isinstance(t_bone_val, list) else [t_bone_val]
+        t_bone_main = t_bone_list[0]
+        
+        if t_bone_main.name == root_bone_name:
+            ret_locs[t_bone_main.name] = {}
             s_rest_pos = s_bone.world_matrix[3, :3]
             
             # Calculate Horizontal Offset at Frame 0 to center at origin
@@ -1382,17 +1976,18 @@ def retarget_animation(src_skel: Skeleton, tgt_skel: Skeleton, mapping: dict[str
                 s_pos_f = s_bone.world_location_animation.get(f, s_rest_pos)
                 t_pos_f = global_transform_q.apply(s_pos_f * scale) + h_offset
                 
-                # IN-PLACE: Remove horizontal movement relative to start position
                 if in_place:
+                    # Lock horizontal movement to the initial position (frame 0)
                     if t_up_axis[1] == 1: # Y-Up
-                        t_pos_f[0] = t_pos_0[0] + h_offset[0] # Lock X
-                        t_pos_f[2] = t_pos_0[2] + h_offset[2] # Lock Z
+                        t_pos_f[0] = 0.0 # Center X
+                        t_pos_f[2] = 0.0 # Center Z
                     else: # Z-Up
-                        t_pos_f[0] = t_pos_0[0] + h_offset[0] # Lock X
-                        t_pos_f[1] = t_pos_0[1] + h_offset[1] # Lock Y
+                        t_pos_f[0] = 0.0 # Center X
+                        t_pos_f[1] = 0.0 # Center Y
                 
                 # Transform to Parent Local Space
-                pname = t_bone.parent_name
+                pname = t_bone_main.parent_name
+                # ... existing logic ...
                 p_world_mat = tgt_skel.node_world_matrices.get(pname, np.eye(4))
                 prot_q = tgt_world_anims.get(pname, {}).get(f)
                 if prot_q is not None:
@@ -1404,26 +1999,30 @@ def retarget_animation(src_skel: Skeleton, tgt_skel: Skeleton, mapping: dict[str
                 p_mat_inv = np.linalg.inv(p_world_mat)
                 v_homog = np.append(t_pos_f, 1.0)
                 local_pos_f = (v_homog @ p_mat_inv)[:3]
-                ret_locs[t_bone.name][f] = local_pos_f
+                ret_locs[t_bone_main.name][f] = local_pos_f
 
     # 3. Local Rotations
-    for s_bone, t_bone, _ in active:
-        ret_rots[t_bone.name] = {}
-        pname = t_bone.parent_name
+    for s_bone, t_bone_val, _ in active:
+        # Handle list or single bone
+        t_bone_list = t_bone_val if isinstance(t_bone_val, list) else [t_bone_val]
         
-        is_head = 'head' in t_bone.name.lower() and 'neck' not in t_bone.name.lower()
-        
-        for f in frames:
-            prot = tgt_world_anims.get(pname, {}).get(f)
-            if prot is None:
-                # Fallback: Check if target skeleton has this node's rest orientation
-                prot = tgt_skel.node_rest_rotations.get(pname, np.array([1, 0, 0, 0]))
-                # Apply global rotation to parent if it's not animated
-                prot = quaternion_multiply(gt_q_np, prot)
-                
-            # Target world rotation to local space: Local = ParentWorld.inv @ World
-            l_rot = quaternion_multiply(quaternion_inverse(prot), tgt_world_anims[t_bone.name][f])
-            ret_rots[t_bone.name][f] = l_rot
+        for tb in t_bone_list:
+            ret_rots[tb.name] = {}
+            pname = tb.parent_name
+            
+            is_head = 'head' in tb.name.lower() and 'neck' not in tb.name.lower()
+            
+            for f in frames:
+                prot = tgt_world_anims.get(pname, {}).get(f)
+                if prot is None:
+                    # Fallback: Check if target skeleton has this node's rest orientation
+                    prot = tgt_skel.node_rest_rotations.get(pname, np.array([1, 0, 0, 0]))
+                    # Apply global rotation to parent if it's not animated
+                    prot = quaternion_multiply(gt_q_np, prot)
+                    
+                # Target world rotation to local space: Local = ParentWorld.inv @ World
+                l_rot = quaternion_multiply(quaternion_inverse(prot), tgt_world_anims[tb.name][f])
+                ret_rots[tb.name][f] = l_rot
             
     return ret_rots, ret_locs, active
 
@@ -1536,11 +2135,6 @@ def save_fbx(manager, scene, path):
     print(f"[Retarget] Saved FBX to: {path}")
 
 def main():
-    print("[Retarget] Starting retargeting script...")
-    if not HAS_FBX_SDK:
-        print("[Retarget] ERROR: FBX SDK not found. Please install 'fbx' python package.")
-        sys.exit(1)
-
     parser = argparse.ArgumentParser()
     parser.add_argument('--source', '-s', required=True)
     parser.add_argument('--target', '-t', required=True)
@@ -1549,25 +2143,22 @@ def main():
     parser.add_argument('--yaw', '-y', type=float, default=0.0)
     parser.add_argument('--scale', '-sc', type=float, default=0.0)
     parser.add_argument('--no-neutral', dest='neutral', action='store_false', help="Disable neutral finger rest-pose")
-    parser.add_argument('--in-place', action='store_true', help="Convert animation to in-place (removes horizontal movement)")
-    parser.set_defaults(neutral=True, in_place=False)
+    parser.add_argument('--in-place', action='store_true', help="Lock horizontal movement")
+    parser.set_defaults(neutral=True)
     args = parser.parse_args()
     
     if args.source.lower().endswith('.npz'):
-        print(f"[Retarget] Loading NPZ Source: {args.source}")
+        print(f"Loading NPZ Source: {args.source}")
         src_man, src_scene = None, None
         src_skel = load_npz(args.source)
     else:
-        print(f"[Retarget] Loading FBX Source: {args.source}")
+        # Sampling characters often use frame 0 as bind, but real FBX files have a Bind Pose 
+        # reachable by setting current animation stack to None.
         src_man, src_scene, src_skel = load_fbx(args.source, sample_rest_frame=None)
-        if src_skel is None:
-            print(f"[Retarget] ERROR: Failed to load source FBX: {args.source}")
-            sys.exit(1)
-            
-        src_h = get_skeleton_height(src_skel, [])
+        src_h = get_skeleton_height(src_skel)
         # FALLBACK: If Bind Pose is collapsed (height ~0), try frame 0
         if src_h < 0.1:
-            print("[Retarget] DEBUG: Bind Pose collapsed, falling back to frame 0 for rest pose.")
+            print("DEBUG: Bind Pose collapsed, falling back to frame 0 for rest pose.")
             src_man, src_scene, _ = load_fbx(args.source, sample_rest_frame=0)
             # Refresh skeleton with sampled data
             src_skel = Skeleton(os.path.basename(args.source))
@@ -1575,35 +2166,21 @@ def main():
         
         extract_animation(src_scene, src_skel)
     
-    print(f"[Retarget] Loading Target FBX: {args.target}")
     tgt_man, tgt_scene, tgt_skel = load_fbx(args.target)
-    if tgt_skel is None:
-        print(f"[Retarget] ERROR: Failed to load target FBX: {args.target}")
-        sys.exit(1)
     
-    print("[Retarget] Loading bone mapping...")
     mapping = load_bone_mapping(args.mapping, src_skel, tgt_skel)
     
-    print("[Retarget] Calculating retargeting...")
     rots, locs, active = retarget_animation(src_skel, tgt_skel, mapping, args.scale, args.yaw, args.neutral, args.in_place)
     
     print(f"\n[Retarget] Bone Mapping Results:\n  Total: {len(active)} bones mapped")
     if len(active) < 15:
-        print(f"[Retarget] [WARNING] Very few bones mapped ({len(active)}). Retargeting might be poor.")
+        print(f"  [WARNING] Very few bones mapped ({len(active)}). Retargeting might be poor for high-fidelity animations.")
         
     src_time_mode = src_scene.GetGlobalSettings().GetTimeMode() if src_scene else tgt_scene.GetGlobalSettings().GetTimeMode()
-    print("[Retarget] Applying retargeted animation to scene...")
     apply_retargeted_animation(tgt_scene, tgt_skel, rots, locs, src_skel.frame_start, src_skel.frame_end, src_time_mode)
     
-    print(f"[Retarget] Saving result to: {args.output}")
     save_fbx(tgt_man, tgt_scene, args.output)
-    
-    # Explicit cleanup to prevent SIGSEGV on exit
-    # We use os._exit(0) to bypass the Python interpreter's cleanup sequence
-    # which often conflicts with the FBX SDK's own cleanup.
-    print("[Retarget] Done!")
-    sys.stdout.flush()
-    os._exit(0)
+    print("Done!")
 
 if __name__ == "__main__":
     main()
