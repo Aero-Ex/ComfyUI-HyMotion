@@ -23,6 +23,18 @@ from .hymotion.pipeline.body_model import WoodenMesh, construct_smpl_data_dict
 from .hymotion.utils.downloader import download_file, get_model_path, MODEL_METADATA
 from .nodes_3d_viewer import HYMotionFBXPlayer, HYMotion3DModelLoader
 
+# Retargeting imports
+try:
+    from .hymotion.utils.retarget_fbx import (
+        Skeleton, BoneData, load_npz, load_fbx, load_bone_mapping,
+        retarget_animation, apply_retargeted_animation, save_fbx,
+        collect_skeleton_nodes, extract_animation, get_skeleton_height
+    )
+    HAS_RETARGET_UTILS = True
+except ImportError as e:
+    print(f"[HY-Motion] Warning: Could not import retargeting utils: {e}")
+    HAS_RETARGET_UTILS = False
+
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 if CURRENT_DIR not in sys.path:
     sys.path.insert(0, CURRENT_DIR)
@@ -144,6 +156,13 @@ class HYMotionTextEmbeds:
         self.ctxt = ctxt  # [batch, max_len, 4096] - Qwen3 embeddings
         self.ctxt_length = ctxt_length  # [batch] - actual lengths
         self.text = text
+
+
+class HYMotionFrame:
+    """Wrapper for a single frame of motion data"""
+    def __init__(self, rot6d: torch.Tensor, transl: torch.Tensor):
+        self.rot6d = rot6d  # [1, 22, 6]
+        self.transl = transl  # [1, 3]
 
 
 # ============================================================================
@@ -557,6 +576,72 @@ class HYMotionTextEncode:
 
 
 # ============================================================================
+# Node 3.5: HYMotionExtractFrame - Extract a single frame
+# ============================================================================
+
+class HYMotionExtractFrame:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "motion_data": ("HYMOTION_DATA", {"tooltip": "Motion data to extract frame from"}),
+                "frame_index": ("INT", {
+                    "default": 0,
+                    "min": -10000,
+                    "max": 10000,
+                    "tooltip": "Index of the frame to extract. 0 is first, -1 is last."
+                }),
+            },
+        }
+    
+    RETURN_TYPES = ("HYMOTION_FRAME", "HYMOTION_DATA")
+    RETURN_NAMES = ("frame", "motion_data")
+    FUNCTION = "extract"
+    CATEGORY = "HY-Motion/modular"
+    
+    def extract(self, motion_data: HYMotionData, frame_index: int):
+        output_dict = motion_data.output_dict
+        rot6d = output_dict["rot6d"] # [B, L, J, 6]
+        transl = output_dict["transl"] # [B, L, 3]
+        k3d = output_dict.get("keypoints3d")
+        root_rot = output_dict.get("root_rotations_mat")
+        
+        # Handle negative indexing
+        L = rot6d.shape[1]
+        if frame_index < 0:
+            frame_index = L + frame_index
+            
+        frame_index = max(0, min(frame_index, L - 1))
+        
+        # Extract first sample in batch
+        frame_rot6d = rot6d[0:1, frame_index:frame_index+1, :, :].clone()
+        frame_transl = transl[0:1, frame_index:frame_index+1, :].clone()
+        
+        # Create a frame wrapper for the sampler
+        frame_wrapper = HYMotionFrame(rot6d=frame_rot6d, transl=frame_transl)
+        
+        # Create a 1-frame HYMotionData for previewing/saving
+        frame_output_dict = {
+            "rot6d": frame_rot6d,
+            "transl": frame_transl,
+        }
+        if k3d is not None:
+            frame_output_dict["keypoints3d"] = k3d[0:1, frame_index:frame_index+1, :, :].clone()
+        if root_rot is not None:
+            frame_output_dict["root_rotations_mat"] = root_rot[0:1, frame_index:frame_index+1, :, :].clone()
+            
+        frame_motion_data = HYMotionData(
+            output_dict=frame_output_dict,
+            text=f"{motion_data.text} (frame {frame_index})",
+            duration=1/30.0,
+            seeds=[motion_data.seeds[0]],
+            device_info=motion_data.device_info
+        )
+        
+        return (frame_wrapper, frame_motion_data)
+
+
+# ============================================================================
 # Node 4: HYMotionSampler - Generate Motion
 # ============================================================================
 
@@ -655,6 +740,8 @@ class HYMotionSampler:
                     "step": 8,
                     "tooltip": "Frames processed at once for body model. Higher = faster but more VRAM."
                 }),
+                "first_frame": ("HYMOTION_FRAME", {"tooltip": "Optional starting pose for the motion"}),
+                "last_frame": ("HYMOTION_FRAME", {"tooltip": "Optional ending pose for the motion"}),
             }
         }
     
@@ -670,7 +757,9 @@ class HYMotionSampler:
                enable_ctxt_null_feat: bool = True,
                sampler_method: str = "dopri5", atol: float = 1e-4, rtol: float = 1e-4,
                align_ground: bool = True, ground_offset: float = 0.0,
-               skip_smoothing: bool = False, body_chunk_size: int = 64):
+               skip_smoothing: bool = False, body_chunk_size: int = 64,
+               first_frame: Optional[HYMotionFrame] = None, 
+               last_frame: Optional[HYMotionFrame] = None):
         
         def safe_float(v, default):
             try:
@@ -749,6 +838,63 @@ class HYMotionSampler:
         latent_dim = 201
         latent_shape = (num_samples, train_frames, latent_dim)
         
+        # Prepare conditioned latents if provided
+        first_latent = None
+        last_latent = None
+        root_offset = torch.zeros((1, 3), device=dit_model.device)
+        
+        if first_frame is not None or last_frame is not None:
+            if dit_model.mean is not None and dit_model.std is not None:
+                mean = dit_model.mean.to(dit_model.device)
+                std = dit_model.std.to(dit_model.device)
+                
+                def normalize_frame(frame: HYMotionFrame):
+                    # rot6d: [1, 22, 6], transl: [1, 3]
+                    # Flatten to [1, 135]
+                    raw = torch.cat([frame.transl.flatten(), frame.rot6d.flatten()]).unsqueeze(0)
+                    # Pad to 201
+                    padded = torch.zeros((1, 201), device=dit_model.device)
+                    padded[:, :raw.shape[1]] = raw
+                    # Normalize
+                    # Handle zero std like in decoding
+                    std_eff = torch.where(std < 1e-3, torch.zeros_like(std), std)
+                    # For dimensions with zero std, we just use the mean (latent becomes 0)
+                    # (padded - mean) / std_eff
+                    norm = torch.zeros_like(padded)
+                    mask = std >= 1e-3
+                    norm[:, mask] = (padded[:, mask] - mean[mask]) / std[mask]
+                    return norm.to(dit_model.device)
+
+                if first_frame is not None:
+                    # Extract root offset from first frame (HORIZONTAL ONLY)
+                    # We only want to shift X and Z. We must preserve Y (height) so the AI 
+                    # doesn't "jump" from the floor to its natural height.
+                    root_offset = first_frame.transl.clone().to(dit_model.device)
+                    root_offset[..., 1] = 0 # Zero out Y in the offset
+                    print(f"[HY-Motion] DEBUG: Input first_frame transl: {first_frame.transl.cpu().numpy()}")
+                    
+                    # Create a relative version for conditioning (preserves Y)
+                    local_first_frame = HYMotionFrame(
+                        rot6d=first_frame.rot6d,
+                        transl=(first_frame.transl.to(dit_model.device) - root_offset).cpu()
+                    )
+                    first_latent = normalize_frame(local_first_frame)
+                    print(f"[HY-Motion] Horizontal root offset extracted: {root_offset.cpu().numpy()}")
+                    print(f"[HY-Motion] DEBUG: Local first_frame transl (should have original Y): {local_first_frame.transl.numpy()}")
+                    print(f"[HY-Motion] DEBUG: Normalized first_latent transl (dim 0-3): {first_latent[:, :3].cpu().numpy()}")
+                
+                if last_frame is not None:
+                    print(f"[HY-Motion] DEBUG: Input last_frame transl: {last_frame.transl.cpu().numpy()}")
+                    # For last frame, we make it relative to the first frame's offset
+                    local_last_frame = HYMotionFrame(
+                        rot6d=last_frame.rot6d,
+                        transl=(last_frame.transl.to(dit_model.device) - root_offset).cpu()
+                    )
+                    last_latent = normalize_frame(local_last_frame)
+                    print(f"[HY-Motion] DEBUG: Normalized last_latent transl (dim 0-3): {last_latent[:, :3].cpu().numpy()}")
+            else:
+                print("[HY-Motion] WARNING: Cannot condition frames without normalization stats!")
+
         # Generate noise from seeds (matching official implementation)
         generators = []
         for s in seeds:
@@ -829,6 +975,20 @@ class HYMotionSampler:
                 x_mask_temporal=x_mask_cfg
             )
             
+            # Apply CFG
+            if do_cfg:
+                x_pred_uncond, x_pred_cond = x_pred.chunk(2)
+                x_pred = x_pred_uncond + cfg_scale * (x_pred_cond - x_pred_uncond)
+            
+            # Velocity Overriding (Mathematically Correct Conditioning for Flow Matching)
+            # We override the predicted velocity for conditioned frames to ensure they reach 
+            # the target latent at t=1.
+            # Formula: v = target - noise_at_t0
+            if first_latent is not None:
+                x_pred[:, 0, :] = first_latent - y0[:, 0, :]
+            if last_latent is not None:
+                x_pred[:, num_frames - 1, :] = last_latent - y0[:, num_frames - 1, :]
+            
             if torch.isnan(x_pred).any():
                 print(f"[HY-Motion] ERROR: DiT forward produced NaNs at t={t.item()}!")
             
@@ -836,11 +996,6 @@ class HYMotionSampler:
             if step_counter[0] < 3:
                 rms = (x_pred**2).mean().sqrt().item()
                 print(f"[HY-Motion] DiT step {step_counter[0]} t={t.item():.4f} output RMS: {rms:.4f}")
-            
-            # Apply CFG
-            if do_cfg:
-                x_pred_uncond, x_pred_cond = x_pred.chunk(2, dim=0)
-                x_pred = x_pred_uncond + cfg_scale * (x_pred_cond - x_pred_uncond)
             
             # Update progress
             step_counter[0] += 1
@@ -892,6 +1047,7 @@ class HYMotionSampler:
         B, L = latent_denorm.shape[:2]
         
         transl = latent_denorm[..., 0:3].clone()
+        print(f"[HY-Motion] DEBUG: Raw decoded transl[0]: {transl[:, 0, :].cpu().numpy()}")
         root_rot6d = latent_denorm[..., 3:9].reshape(B, L, 1, 6).clone()
         body_rot6d = latent_denorm[..., 9:9+21*6].reshape(B, L, 21, 6).clone()
         rot6d = torch.cat([root_rot6d, body_rot6d], dim=2)  # (B, L, 22, 6)
@@ -906,6 +1062,65 @@ class HYMotionSampler:
             rot6d_smooth = MotionGeneration.smooth_with_slerp(rot6d, sigma=1.0)
             # Savgol filter with window=11, polyorder=5 (matching official)
             transl_smooth = MotionGeneration.smooth_with_savgol(transl, window_length=11, polyorder=5)
+            
+            # Ramped Drift Correction: Ensures conditioned frames match exactly while preserving smoothing
+            if first_frame is not None and last_frame is not None:
+                print("[HY-Motion] Applying ramped drift correction for seamless loop/transition")
+                drift_start = transl_smooth[:, 0, :] - transl[:, 0, :]
+                drift_end = transl_smooth[:, -1, :] - transl[:, -1, :]
+                print(f"[HY-Motion] DEBUG: Smoothing drift - Start: {drift_start.cpu().numpy()}, End: {drift_end.cpu().numpy()}")
+                t_ramp = torch.linspace(0, 1, num_frames, device=transl.device).view(1, -1, 1)
+                ramp = (1 - t_ramp) * drift_start.unsqueeze(1) + t_ramp * drift_end.unsqueeze(1)
+                transl_smooth -= ramp
+                
+                # Ramped Rotation Blending (eases the transition from pinned pose into smoothed sequence)
+                blend_len = min(10, num_frames // 3)
+                ramp_rot = torch.linspace(1, 0, blend_len, device=rot6d_smooth.device).view(1, -1, 1, 1)
+                rot6d_smooth[:, :blend_len, :, :] = ramp_rot * rot6d[:, :blend_len, :, :] + (1 - ramp_rot) * rot6d_smooth[:, :blend_len, :, :]
+                
+                ramp_rot_end = torch.linspace(0, 1, blend_len, device=rot6d_smooth.device).view(1, -1, 1, 1)
+                rot6d_smooth[:, -blend_len:, :, :] = (1 - ramp_rot_end) * rot6d_smooth[:, -blend_len:, :, :] + ramp_rot_end * rot6d[:, -blend_len:, :, :]
+                
+            elif first_frame is not None:
+                print("[HY-Motion] Correcting smoothing drift at start frame")
+                drift = transl_smooth[:, 0, :] - transl[:, 0, :]
+                print(f"[HY-Motion] DEBUG: Smoothing drift at start: {drift.cpu().numpy()}")
+                transl_smooth -= drift.unsqueeze(1)
+                
+                # Ramped Rotation Blending
+                blend_len = min(10, num_frames // 3)
+                ramp_rot = torch.linspace(1, 0, blend_len, device=rot6d_smooth.device).view(1, -1, 1, 1)
+                rot6d_smooth[:, :blend_len, :, :] = ramp_rot * rot6d[:, :blend_len, :, :] + (1 - ramp_rot) * rot6d_smooth[:, :blend_len, :, :]
+                
+            elif last_frame is not None:
+                print("[HY-Motion] Correcting smoothing drift at end frame")
+                drift = transl_smooth[:, -1, :] - transl[:, -1, :]
+                print(f"[HY-Motion] DEBUG: Smoothing drift at end: {drift.cpu().numpy()}")
+                transl_smooth -= drift.unsqueeze(1)
+                
+                # Ramped Rotation Blending
+                blend_len = min(10, num_frames // 3)
+                ramp_rot_end = torch.linspace(0, 1, blend_len, device=rot6d_smooth.device).view(1, -1, 1, 1)
+                rot6d_smooth[:, -blend_len:, :, :] = (1 - ramp_rot_end) * rot6d_smooth[:, -blend_len:, :, :] + ramp_rot_end * rot6d[:, -blend_len:, :, :]
+            
+            # Detailed Transition Logging (First 5 frames)
+            if first_frame is not None:
+                print("[HY-Motion] DEBUG: Detailed Transition (First 5 frames):")
+                target_rot = first_frame.rot6d.to(rot6d_smooth.device)
+                for i in range(min(5, num_frames)):
+                    # Raw values (before smoothing)
+                    r_t = transl[0, i, :].cpu().numpy()
+                    r_r_diff = torch.abs(rot6d[0, i, :, :] - target_rot).mean().item()
+                    
+                    # Smoothed values
+                    s_t = transl_smooth[0, i, :].cpu().numpy()
+                    s_r_diff = torch.abs(rot6d_smooth[0, i, :, :] - target_rot).mean().item()
+                    
+                    print(f"  Frame {i}:")
+                    print(f"    RAW:    Transl={r_t}, RotDiff={r_r_diff:.6f}")
+                    print(f"    SMOOTH: Transl={s_t}, RotDiff={s_r_diff:.6f}")
+            
+            print(f"[HY-Motion] DEBUG: Post-smoothing transl[0]: {transl_smooth[:, 0, :].cpu().numpy()}")
         
         # Convert rot6d to rotation matrices
         rot_mat = rot6d_to_rotation_matrix(rot6d_smooth.reshape(-1, 6)).reshape(B, L, num_joints, 3, 3)
@@ -934,16 +1149,19 @@ class HYMotionSampler:
             
             # Align with ground (ensure character doesn't fly or sink)
             if align_ground:
-                # Find the absolute minimum Y across all vertices and all time steps
-                min_y = vertices[..., 1].amin(dim=(1, 2), keepdim=True) # (B, 1, 1)
-                
-                # Apply offset to move lowest point to 0, then add user offset
-                total_offset = -min_y.squeeze(-1) + ground_offset # (B, 1)
-                
-                print(f"[HY-Motion] Ground Aligning: min_y={min_y.mean().item():.4f}m, applying +{total_offset.mean().item():.4f}m offset")
-                
-                keypoints3d[..., 1] += total_offset.unsqueeze(-1)
-                transl_cpu[..., 1] += total_offset
+                if first_frame is not None:
+                    print("[HY-Motion] Skipping automatic ground alignment because first_frame is provided (preserving previous height)")
+                else:
+                    # Find the absolute minimum Y across all vertices and all time steps
+                    min_y = vertices[..., 1].amin(dim=(1, 2), keepdim=True) # (B, 1, 1)
+                    
+                    # Apply offset to move lowest point to 0, then add user offset
+                    total_offset = -min_y.squeeze(-1) + ground_offset # (B, 1)
+                    
+                    print(f"[HY-Motion] Ground Aligning: min_y={min_y.mean().item():.4f}m, applying +{total_offset.mean().item():.4f}m offset")
+                    
+                    keypoints3d[..., 1] += total_offset.unsqueeze(-1)
+                    transl_cpu[..., 1] += total_offset
             elif ground_offset != 0:
                 print(f"[HY-Motion] Applying manual ground offset: {ground_offset}m")
                 transl_cpu[..., 1] += ground_offset
@@ -952,10 +1170,11 @@ class HYMotionSampler:
         # Create output dictionary
         output_dict = {
             "rot6d": rot6d_cpu,
-            "transl": transl_cpu,
-            "keypoints3d": keypoints3d,
+            "transl": transl_cpu + root_offset.cpu(), # Restore root offset
+            "keypoints3d": keypoints3d.cpu() + root_offset.cpu().unsqueeze(1), # Restore root offset to keypoints
             "root_rotations_mat": rot_mat_cpu[:, :, 0],
         }
+        print(f"[HY-Motion] DEBUG: Final output transl[0]: {output_dict['transl'][:, 0, :].numpy()}")
         
         # Create motion data wrapper
         motion_data = HYMotionData(
@@ -1314,10 +1533,11 @@ class HYMotionSaveNPZ:
                 for k, v in smpl_data.items():
                     if k not in data:
                         data[k] = v
-
-            data["text"] = motion_data.text
-            data["duration"] = motion_data.duration
-            data["seed"] = motion_data.seeds[batch_idx] if batch_idx < len(motion_data.seeds) else 0
+                
+                # Also include text and duration for complete reconstruction
+                data["text"] = motion_data.text
+                data["duration"] = motion_data.duration
+                data["seed"] = motion_data.seeds[batch_idx] if batch_idx < len(motion_data.seeds) else 0
 
             npz_filename = f"{filename_prefix}_{timestamp}_{unique_id}_{batch_idx:03d}.npz"
             npz_path = os.path.join(full_output_dir, npz_filename)
@@ -1330,6 +1550,68 @@ class HYMotionSaveNPZ:
         relative_paths = [os.path.relpath(p, COMFY_OUTPUT_DIR).replace("\\", "/") for p in npz_files]
         result = "\n".join(relative_paths)
         return (result,)
+
+
+class HYMotionLoadNPZ:
+    """Load motion data from an NPZ file (from output or input directory)"""
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "npz_path": ("STRING", {"default": "hymotion_npz/motion.npz"}),
+            }
+        }
+    
+    RETURN_TYPES = ("HYMOTION_DATA",)
+    RETURN_NAMES = ("motion_data",)
+    FUNCTION = "load"
+    CATEGORY = "HY-Motion/utils"
+    
+    def load(self, npz_path):
+        # Resolve path: check output, then input, then absolute
+        full_path = ""
+        if os.path.isabs(npz_path):
+            full_path = npz_path
+        else:
+            # Try output first
+            out_path = os.path.join(COMFY_OUTPUT_DIR, npz_path)
+            if os.path.exists(out_path):
+                full_path = out_path
+            else:
+                # Try input
+                in_path = os.path.join(folder_paths.get_input_directory(), npz_path)
+                if os.path.exists(in_path):
+                    full_path = in_path
+                else:
+                    raise FileNotFoundError(f"NPZ file not found: {npz_path}")
+            
+        print(f"[HY-Motion] Loading NPZ: {full_path}")
+        data = np.load(full_path, allow_pickle=True)
+        
+        # Reconstruct output_dict
+        output_dict = {}
+        # Map keys back to tensors
+        for key in ["keypoints3d", "rot6d", "transl", "root_rotations_mat"]:
+            if key in data:
+                output_dict[key] = torch.from_numpy(data[key]).unsqueeze(0) # Add batch dim
+        
+        # Extract metadata
+        text = str(data.get("text", "loaded motion"))
+        duration = float(data.get("duration", 0.0))
+        seed = int(data.get("seed", 0))
+        
+        # If duration is missing, estimate from frames (30 FPS)
+        if duration <= 0 and "rot6d" in output_dict:
+            duration = output_dict["rot6d"].shape[1] / 30.0
+            
+        motion_data = HYMotionData(
+            output_dict=output_dict,
+            text=text,
+            duration=duration,
+            seeds=[seed],
+            device_info="cpu"
+        )
+        return (motion_data,)
 
 
 class HYMotionRetargetFBX:
@@ -1456,26 +1738,23 @@ class HYMotionRetargetFBX:
         
         # Process each batch item separately
         for batch_idx in range(motion_data.batch_size):
-            # Generate temp NPZ from motion_data for this batch item
-            temp_npz = os.path.join(COMFY_OUTPUT_DIR, f"hymotion_temp_{timestamp}_{batch_idx}.npz")
-            
             if unique_names:
                 output_fbx = os.path.join(full_output_dir, f"{filename_prefix}_{timestamp}_{unique_id}_{batch_idx:03d}.fbx")
             else:
                 output_fbx = os.path.join(full_output_dir, f"{filename_prefix}_{batch_idx:03d}.fbx")
             
             try:
-                # Save motion data to temp NPZ (single batch item)
-                data_dict = {}
+                if not HAS_RETARGET_UTILS:
+                    raise RuntimeError("Retargeting utilities not available. Check if FBX SDK is installed.")
+
                 output_dict = motion_data.output_dict
                 
+                # Extract data for this batch item
+                data_dict = {}
                 for key in ['keypoints3d', 'rot6d', 'transl', 'root_rotations_mat']:
                     if key in output_dict and output_dict[key] is not None:
                         tensor = output_dict[key][batch_idx]
-                        if isinstance(tensor, torch.Tensor):
-                            data_dict[key] = tensor.cpu().numpy()
-                        else:
-                            data_dict[key] = np.array(tensor)
+                        data_dict[key] = tensor.cpu().numpy() if isinstance(tensor, torch.Tensor) else np.array(tensor)
                 
                 # Add SMPL-H full poses for consistency
                 if "rot6d" in data_dict and "transl" in data_dict:
@@ -1487,69 +1766,42 @@ class HYMotionRetargetFBX:
                         if k not in data_dict:
                             data_dict[k] = v
                 
-                np.savez(temp_npz, **data_dict)
-                
-                # Import and run retargeting script
-                import subprocess
-                import sys
-                
-                # Find the retarget script dynamically
-                current_dir = os.path.dirname(os.path.realpath(__file__))
-                retarget_script = os.path.join(current_dir, "hymotion", "utils", "retarget_fbx.py")
-                
-                if not os.path.exists(retarget_script):
-                    raise FileNotFoundError(f"Retargeting script not found at expected location: {retarget_script}")
-                
-                # Build command
-                cmd = [
-                    sys.executable,
-                    retarget_script,
-                    "--source", temp_npz,
-                    "--target", target_fbx,
-                    "--output", output_fbx,
-                ]
-                
-                if mapping_file and mapping_file.strip():
-                    mapping_path = mapping_file if os.path.isabs(mapping_file) else os.path.join(current_dir, mapping_file)
-                    if os.path.exists(mapping_path):
-                        cmd.extend(["--mapping", mapping_path])
-                
-                if yaw_offset != 0.0:
-                   cmd.extend(["--yaw", str(yaw_offset)])
-                
-                if scale > 0.0:
-                    cmd.extend(["--scale", str(scale)])
-                
-                if not neutral_fingers:
-                    cmd.append("--no-neutral")
-                
-                if in_place:
-                    cmd.append("--in-place")
-                
-                # Run retargeting
-                print(f"[HYMotionRetargetFBX] Retargeting batch {batch_idx}/{motion_data.batch_size}...")
-                
-                result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-                if batch_idx == 0:  # Only print full output for first batch
-                    print(result.stdout)
-                
-                if not os.path.exists(output_fbx):
-                    raise RuntimeError(f"Retargeting failed: output FBX not created for batch {batch_idx}")
-                
+                # Populate Skeleton object
+                if "poses" in data_dict:
+                    # Call native functions with in-memory data
+                    print(f"[HYMotionRetargetFBX] Retargeting batch {batch_idx}/{motion_data.batch_size} (Native In-Memory)...")
+                    
+                    # Load skeletons (src_skel from dict, tgt from FBX)
+                    src_skel_loaded = load_npz(data_dict)
+                    tgt_man, tgt_scene, tgt_skel = load_fbx(target_fbx)
+                    
+                    # Perform retargeting
+                    mapping = load_bone_mapping(mapping_file, src_skel_loaded, tgt_skel)
+                    rots, locs, active = retarget_animation(
+                        src_skel_loaded, tgt_skel, mapping, 
+                        scale, yaw_offset, neutral_fingers, in_place
+                    )
+                    
+                    # Apply and save
+                    src_time_mode = None # Default to 30 FPS
+                    apply_retargeted_animation(
+                        tgt_scene, tgt_skel, rots, locs, 
+                        src_skel_loaded.frame_start, src_skel_loaded.frame_end, src_time_mode
+                    )
+                    
+                    save_fbx(tgt_man, tgt_scene, output_fbx)
+                else:
+                    raise ValueError("Motion data missing 'poses' for retargeting.")
+
                 output_fbx_files.append(output_fbx)
                 print(f"[HYMotionRetargetFBX] Batch {batch_idx} done: {os.path.basename(output_fbx)}")
                 
-            except subprocess.CalledProcessError as e:
-                error_msg = f"Retargeting failed for batch {batch_idx}.\nSTDOUT: {e.stdout}\nSTDERR: {e.stderr}"
+            except Exception as e:
+                error_msg = f"Retargeting failed for batch {batch_idx}: {str(e)}"
                 print(f"[HYMotionRetargetFBX] {error_msg}")
+                import traceback
+                traceback.print_exc()
                 raise RuntimeError(error_msg)
-            finally:
-                # Clean up temp NPZ
-                if os.path.exists(temp_npz):
-                    try:
-                        os.remove(temp_npz)
-                    except:
-                        pass
         
         # Return all paths (newline-separated)
         relative_paths = [os.path.relpath(p, COMFY_OUTPUT_DIR).replace("\\", "/") for p in output_fbx_files]
@@ -1649,11 +1901,6 @@ class HYMotionSMPLToData:
 
         # Combine body_pose and global_orient if needed
         if poses is None:
-            if len(body_pose.shape) == 2:
-                body_pose = body_pose.reshape(body_pose.shape[0], -1, 3)
-            if len(global_orient.shape) == 2:
-                global_orient = global_orient.reshape(global_orient.shape[0], 1, 3)
-            
             # Ensure same device before cat
             device = body_pose.device
             poses = torch.cat([global_orient.to(device), body_pose], dim=1)
@@ -1789,6 +2036,7 @@ class HYMotionSMPLToData:
 
         print(f"[HY-Motion] Successfully converted {num_frames} frames ({num_joints} joints) from SMPL to HY-Motion format (Batch: {batch_size}).")
         return (motion_data,)
+
 from .hymotion.utils.downloader import download_file, get_model_path, MODEL_METADATA, download_models_parallel
 
 class HYMotionModelDownloader:
@@ -1834,9 +2082,11 @@ NODE_CLASS_MAPPINGS_MODULAR = {
     "HYMotionTextEncoderLoader": HYMotionTextEncoderLoader,
     "HYMotionTextEncode": HYMotionTextEncode,
     "HYMotionSampler": HYMotionSampler,
+    "HYMotionExtractFrame": HYMotionExtractFrame,
     "HYMotionModularExportFBX": HYMotionModularExportFBX,
     "HYMotionPromptRewrite": HYMotionPromptRewrite,
     "HYMotionSaveNPZ": HYMotionSaveNPZ,
+    "HYMotionLoadNPZ": HYMotionLoadNPZ,
     "HYMotionRetargetFBX": HYMotionRetargetFBX,
     "HYMotionSMPLToData": HYMotionSMPLToData,
     "HYMotionFBXPlayer": HYMotionFBXPlayer,
@@ -1849,12 +2099,17 @@ NODE_DISPLAY_NAME_MAPPINGS_MODULAR = {
     "HYMotionTextEncoderLoader": "HY-Motion Text Encoder Loader",
     "HYMotionTextEncode": "HY-Motion Text Encode",
     "HYMotionSampler": "HY-Motion Sampler",
+    "HYMotionExtractFrame": "HY-Motion Extract Frame",
     "HYMotionModularExportFBX": "HY-Motion Export FBX",
     "HYMotionPromptRewrite": "HY-Motion Prompt Rewrite",
     "HYMotionSaveNPZ": "HY-Motion Save NPZ",
+    "HYMotionLoadNPZ": "HY-Motion Load NPZ",
     "HYMotionRetargetFBX": "HY-Motion Retarget to FBX",
     "HYMotionSMPLToData": "HY-Motion SMPL to Data",
     "HYMotionFBXPlayer": "HY-Motion FBX Player",
     "HYMotion3DModelLoader": "HY-Motion 3D Model Loader",
     "HYMotionModelDownloader": "HY-Motion Model Downloader",
 }
+
+NODE_CLASS_MAPPINGS = {**NODE_CLASS_MAPPINGS_MODULAR}
+NODE_DISPLAY_NAME_MAPPINGS = {**NODE_DISPLAY_NAME_MAPPINGS_MODULAR}
