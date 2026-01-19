@@ -267,9 +267,14 @@ def rot6d_to_matrix_np(d6: np.ndarray) -> np.ndarray:
     b3 = np.cross(b1, b2, axis=1)
     return np.stack((b1, b2, b3), axis=-1).reshape(*shape, 3, 3)
 
-def load_npz(filepath: str) -> Skeleton:
-    """Load motion data from NPZ file (HyMotion/SMPL-H format)."""
-    data = np.load(filepath)
+def load_npz(data_or_path: str | dict) -> Skeleton:
+    """Load motion data from NPZ file or dictionary (HyMotion/SMPL-H format)."""
+    if isinstance(data_or_path, str):
+        data = np.load(data_or_path)
+        name = os.path.basename(data_or_path)
+    else:
+        data = data_or_path
+        name = "In-Memory Data"
     # Typical HyMotion NPZ structure:
     # keypoints3d (T, 52, 3), rot6d (T, 22, 6), transl (T, 3), root_rotations_mat (T, 3, 3)
     kps = data['keypoints3d']
@@ -297,7 +302,7 @@ def load_npz(filepath: str) -> Skeleton:
         21, 37, 38, 21, 40, 41, 21, 43, 44, 21, 46, 47, 21, 49, 50
     ]
     
-    skel = Skeleton(os.path.basename(filepath))
+    skel = Skeleton(name)
     skel.frame_start = 0
     skel.frame_end = T - 1
     skel.fps = 30.0

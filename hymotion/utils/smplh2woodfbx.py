@@ -166,6 +166,12 @@ def _animateRotationKeyFrames(animLayer, node, rot_matrices, frameDuration):
         euler = R.from_matrix(mat).as_euler("xyz", degrees=True)
         rotations.append(euler)
 
+    # Set the node's default rotation to the first frame's value
+    # This ensures the pose is visible even if the animation doesn't play (e.g., 1-frame FBX)
+    if len(rotations) > 0:
+        first_rot = rotations[0]
+        node.LclRotation.Set(fbx.FbxDouble3(float(first_rot[0]), float(first_rot[1]), float(first_rot[2])))
+
     _animateSingleChannel(animLayer, node.LclRotation, "X", rotations, frameDuration)
     _animateSingleChannel(animLayer, node.LclRotation, "Y", rotations, frameDuration)
     _animateSingleChannel(animLayer, node.LclRotation, "Z", rotations, frameDuration)
@@ -182,6 +188,11 @@ def _animateTranslationKeyFrames(animLayer, node, translations, frameDuration):
     if len(translations.shape) == 1:
         # Single frame, reshape to (1, 3)
         translations = translations.reshape(1, -1)
+
+    # Set the node's default translation to the first frame's value
+    if len(translations) > 0:
+        first_trans = translations[0]
+        node.LclTranslation.Set(fbx.FbxDouble3(float(first_trans[0]), float(first_trans[1]), float(first_trans[2])))
 
     _animateSingleChannel(animLayer, node.LclTranslation, "X", translations, frameDuration)
     _animateSingleChannel(animLayer, node.LclTranslation, "Y", translations, frameDuration)
