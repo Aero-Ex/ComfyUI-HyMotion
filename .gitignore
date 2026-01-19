@@ -6,10 +6,26 @@ __pycache__/
 .vscode/
 .idea/
 *.log
+
+# Models and large assets
 models/
+hymotion/HY-Motion-1.0/
+hymotion/HY-Motion-1.0-Lite/
+models_configs/
+
+# Test outputs and temporary files
+*.fbx
+*.npz
+*.png
+!assets/*.png
+!web/**/*.png
+
+# ComfyUI specific
+/input/
+/output/
+/temp/
+
 # Avoid recursive ignores of code subdirectories
-/hymotion/HY-Motion-1.0/
-/hymotion/HY-Motion-1.0-Lite/
 # Only ignore text_encoders if it's in the root (where models might be)
 
 # assets/
