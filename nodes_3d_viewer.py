@@ -6,6 +6,20 @@ import folder_paths
 from server import PromptServer
 from aiohttp import web
 
+# Shared data types
+from .hymotion.utils.data_types import HYMotionData, HYMotionFrame
+
+# Retargeting imports
+try:
+    from .hymotion.utils.retarget_fbx import (
+        Skeleton, BoneData, load_npz, load_fbx, load_bone_mapping,
+        retarget_animation, apply_retarget_animation, save_fbx,
+        collect_skeleton_nodes, extract_animation, get_skeleton_height
+    )
+    HAS_RETARGET_UTILS = True
+except ImportError:
+    HAS_RETARGET_UTILS = False
+
 # Server route for in-place FBX export
 @PromptServer.instance.routes.post("/hymotion/export_inplace")
 async def export_inplace_fbx(request):
@@ -130,7 +144,7 @@ async def export_inplace_fbx(request):
 class HYMotion3DModelLoader:
     """
     Standalone viewer for 3D models (FBX, GLB, GLTF, OBJ).
-    Scans both input and output directories.
+    Focuses on model loading and manual posing.
     """
     @classmethod
     def INPUT_TYPES(s):
@@ -158,7 +172,7 @@ class HYMotion3DModelLoader:
             "required": {
                 "model_path": (files, {
                     "default": files[0],
-                    "tooltip": "Select a 3D model to view immediately"
+                    "tooltip": "Select a 3D model to load and pose"
                 }),
                 "translate_x": ("FLOAT", {"default": 0.0, "min": -1000.0, "max": 1000.0, "step": 0.01}),
                 "translate_y": ("FLOAT", {"default": 0.0, "min": -1000.0, "max": 1000.0, "step": 0.01}),
@@ -169,16 +183,30 @@ class HYMotion3DModelLoader:
                 "scale_x": ("FLOAT", {"default": 1.0, "min": 0.001, "max": 1000.0, "step": 0.01}),
                 "scale_y": ("FLOAT", {"default": 1.0, "min": 0.001, "max": 1000.0, "step": 0.01}),
                 "scale_z": ("FLOAT", {"default": 1.0, "min": 0.001, "max": 1000.0, "step": 0.01}),
-            }
+                # HIDDEN: Frame inputs in development
+                # "start_frame": ("INT", {"default": 0, "min": 0, "max": 1000000}),
+                # "end_frame": ("INT", {"default": 0, "min": 0, "max": 1000000}),
+                # HIDDEN: Pose capture in development
+                # "start_pose_json": ("STRING", {"default": "{}"}),
+                # "end_pose_json": ("STRING", {"default": "{}"}),
+            },
         }
 
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("model_url",)
+    # HIDDEN: Pose outputs disabled for now
+    # RETURN_TYPES = ("STRING", "HYMOTION_FRAME", "HYMOTION_FRAME", "HYMOTION_DATA")
+    # RETURN_NAMES = ("model_path", "start_pose", "end_pose", "motion_data")
+    RETURN_TYPES = ("STRING", "HYMOTION_DATA")
+    RETURN_NAMES = ("model_path", "motion_data")
     FUNCTION = "load_model"
     CATEGORY = "HY-Motion/view"
     OUTPUT_NODE = True
 
-    def load_model(self, model_path, translate_x=0.0, translate_y=0.0, translate_z=0.0, rotate_x=0.0, rotate_y=0.0, rotate_z=0.0, scale_x=1.0, scale_y=1.0, scale_z=1.0):
+    def load_model(self, model_path, translate_x=0.0, translate_y=0.0, translate_z=0.0, 
+                   rotate_x=0.0, rotate_y=0.0, rotate_z=0.0, 
+                   scale_x=1.0, scale_y=1.0, scale_z=1.0,
+                   start_frame=0, end_frame=0,
+                   start_pose_json="{}", end_pose_json="{}"):
+        print(f"[HY-Motion] Loader: {model_path} | Frames: {start_frame} to {end_frame}")
         def safe_float(v, default):
             try:
                 if v is None or v == "": return default
@@ -196,20 +224,146 @@ class HYMotion3DModelLoader:
         sz = safe_float(scale_z, 1.0)
 
         if model_path == "none":
-            return (None,)
+            return (None, None, None)
         
+        # Resolve full path
+        full_path = ""
+        if model_path.startswith("input/"):
+            full_path = os.path.join(folder_paths.get_input_directory(), model_path[6:])
+        elif model_path.startswith("output/"):
+            full_path = os.path.join(folder_paths.get_output_directory(), model_path[7:])
+        else:
+            full_path = model_path
+
+        # Handle Manual Rig Poses (Start/End)
+        def parse_pose(json_str, name="Pose"):
+            if not json_str or json_str == "{}":
+                print(f"[HY-Motion] {name}: No pose data (empty)")
+                return None
+            try:
+                import json
+                from .hymotion.utils.geometry import rotation_matrix_to_rot6d, quaternion_to_matrix
+                
+                pose_data = json.loads(json_str)
+                if not pose_data or "bones" not in pose_data or not pose_data["bones"]:
+                    print(f"[HY-Motion] {name}: Invalid pose data (no bones)")
+                    return None
+                
+                #SMPL-H 52 joints
+                smpl_names = [
+                    'pelvis', 'left_hip', 'right_hip', 'spine1', 'left_knee', 'right_knee', 'spine2', 'left_ankle', 'right_ankle', 'spine3', 'left_foot', 'right_foot', 'neck', 'left_collar', 'right_collar', 'head', 'left_shoulder', 'right_shoulder', 'left_elbow', 'right_elbow', 'left_wrist', 'right_wrist', 'left_index1', 'left_index2', 'left_index3', 'left_middle1', 'left_middle2', 'left_middle3', 'left_pinky1', 'left_pinky2', 'left_pinky3', 'left_ring1', 'left_ring2', 'left_ring3', 'left_thumb1', 'left_thumb2', 'left_thumb3', 'right_index1', 'right_index2', 'right_index3', 'right_middle1', 'right_middle2', 'right_middle3', 'right_pinky1', 'right_pinky2', 'right_pinky3', 'right_ring1', 'right_ring2', 'right_ring3', 'right_thumb1', 'right_thumb2', 'right_thumb3'
+                ]
+                
+                rot6d_p = torch.zeros((52, 6))
+                # Default to identity (1,0,0, 0,1,0)
+                rot6d_p[:, 0] = 1.0
+                rot6d_p[:, 4] = 1.0
+                
+                bone_data = pose_data["bones"]
+                matched_count = 0
+                for i, name_joint in enumerate(smpl_names):
+                    # Fuzzy matching for bone names
+                    # 1. Direct match
+                    # 2. Lowercase match
+                    # 3. Match without prefix (e.g. "mixamorig:Pelvis" -> "pelvis")
+                    matched_key = None
+                    # Clean up the target name (e.g. "left_hip" -> "lefthip")
+                    name_clean = name_joint.lower().replace('_', '').replace(' ', '')
+                    
+                    for k in bone_data.keys():
+                        # Clean up the key from the model (e.g. "mixamorig:L_Hip" -> "lhip")
+                        k_clean = k.lower().split(':')[-1].replace('_', '').replace(' ', '')
+                        # Handle common abbreviations and synonyms
+                        if k_clean.startswith('l'): k_clean = 'left' + k_clean[1:]
+                        if k_clean.startswith('r'): k_clean = 'right' + k_clean[1:]
+                        
+                        if k_clean == name_clean or (name_clean == "pelvis" and k_clean == "hips"):
+                            matched_key = k
+                            break
+                    
+                    if matched_key:
+                        matched_count += 1
+                        b = bone_data[matched_key]
+                        # rot can be [9] (flat matrix) or [3, 3] or [4] (quat)
+                        rot_raw = b["rot"]
+                        if len(rot_raw) == 9:
+                            mat = torch.tensor(rot_raw).float().view(3, 3)
+                        elif len(rot_raw) == 4:
+                            # Quat wxyz or xyzw? Three.js uses xyzw
+                            q = torch.tensor([rot_raw[3], rot_raw[0], rot_raw[1], rot_raw[2]])
+                            mat = quaternion_to_matrix(q.unsqueeze(0))[0]
+                        else:
+                            mat = torch.tensor(rot_raw).float()
+                        
+                        r6 = rotation_matrix_to_rot6d(mat.unsqueeze(0))[0]
+                        rot6d_p[i] = r6
+                
+                # Root position (normalized to meters)
+                root_pos = torch.tensor(pose_data.get("root_pos", [0, 0, 0])).float()
+                
+                print(f"[HY-Motion] {name}: Extracted {matched_count}/52 bones. Root Pos: {root_pos.tolist()}")
+                
+                return HYMotionFrame(rot6d=rot6d_p.unsqueeze(0), transl=root_pos.unsqueeze(0))
+            except Exception as e:
+                print(f"[HY-Motion] {name}: Error parsing pose JSON: {e}")
+                import traceback
+                traceback.print_exc()
+                return None
+
+        start_pose = parse_pose(start_pose_json, "Start Pose")
+        end_pose = parse_pose(end_pose_json, "End Pose")
+
         ext = os.path.splitext(model_path)[1].lower()[1:]
+        # Create a motion data object if both poses exist
+        motion_data = None
+        if start_pose is not None and end_pose is not None:
+            # Combine into a 2-frame sequence
+            rot6d = torch.cat([start_pose.rot6d, end_pose.rot6d], dim=0).unsqueeze(0) # [1, 2, 52, 6]
+            transl = torch.cat([start_pose.transl, end_pose.transl], dim=0).unsqueeze(0) # [1, 2, 3]
+            
+            output_dict = {
+                "rot6d": rot6d[:, :, :22], # Truncate to 22 joints for the Sampler
+                "transl": transl,
+            }
+            
+            # Use WoodenMesh to compute keypoints if possible
+            try:
+                from .nodes_modular import _WOODEN_MESH_CACHE, WoodenMesh, construct_smpl_data_dict
+                global _WOODEN_MESH_CACHE
+                if _WOODEN_MESH_CACHE is None:
+                    _WOODEN_MESH_CACHE = WoodenMesh()
+                
+                # Use forward_batch to compute keypoints for the 2-frame sequence
+                # We use the full 52 joints for high-fidelity keypoint visualization
+                res = _WOODEN_MESH_CACHE.forward_batch({"rot6d": rot6d, "trans": transl})
+                keypoints = res["keypoints3d"] # [1, 2, 52, 3]
+                output_dict["keypoints3d"] = keypoints
+            except Exception as e:
+                print(f"[HY-Motion] Loader: Could not compute keypoints for motion_data: {e}")
+
+            motion_data = HYMotionData(
+                output_dict=output_dict,
+                text=f"Keyframes: {os.path.basename(model_path)}",
+                duration=2.0 / 30.0,
+                seeds=[0],
+                device_info="cpu"
+            )
+
         return {
             "ui": {
-                "model_url": model_path, 
-                "format": ext,
-                "transform": {
+                "model_url": [model_path], 
+                "format": [ext],
+                "start_frame": [start_frame],
+                "end_frame": [end_frame],
+                "transform": [{
                     "translate": [tx, ty, tz],
                     "rotate": [rx, ry, rz],
                     "scale": [sx, sy, sz]
-                }
+                }]
             }, 
-            "result": (model_path,)
+            # HIDDEN: Pose outputs removed
+            # "result": (model_path, start_pose, end_pose, motion_data)
+            "result": (model_path, motion_data)
         }
 
 class HYMotionFBXPlayer:

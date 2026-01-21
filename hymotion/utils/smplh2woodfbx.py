@@ -152,7 +152,7 @@ def _animateSingleChannel(animLayer, component, name, values, frameDuration):
         time.SetSecondDouble(nth * frameDuration)
         keyIndex = curve.KeyAdd(time)[0]
         curve.KeySetValue(keyIndex, float(values[nth][ncomp]))
-        curve.KeySetInterpolation(keyIndex, fbx.FbxAnimCurveDef.EInterpolationType.eInterpolationConstant)
+        curve.KeySetInterpolation(keyIndex, fbx.FbxAnimCurveDef.EInterpolationType.eInterpolationLinear)
     curve.KeyModifyEnd()
 
 
@@ -208,7 +208,7 @@ def _clearExistingAnimations(fbxScene):
             anim_stack.Destroy()
 
 
-def _applyAnimationToSkeleton(fbxScene, nodes_map, rot_matrices, translations, fps, smplh_to_fbx_mapping, name="Take1"):
+def _applyAnimationToSkeleton(fbxScene, nodes_map, rot_matrices, translations, fps, smplh_to_fbx_mapping, name="Take1", absolute_root=False):
     """
     Apply SMPL-H animation data to skeleton nodes in the FBX scene.
 
@@ -220,6 +220,7 @@ def _applyAnimationToSkeleton(fbxScene, nodes_map, rot_matrices, translations, f
         fps: Frame rate
         smplh_to_fbx_mapping: Mapping from SMPL-H joint names to FBX node names
         name: Animation take name
+        absolute_root: If True, treats translations as absolute world coordinates and does not add template offsets.
     """
     frameDuration = 1.0 / fps
     num_frames = rot_matrices.shape[0]
@@ -272,9 +273,8 @@ def _applyAnimationToSkeleton(fbxScene, nodes_map, rot_matrices, translations, f
         # Animate translation for root joint (Pelvis)
         if smplh_joint_idx == 0:
             root_node = node
-            # Add initial offset to translations (like smplh2woodfbx.py does: Translates[0] + trans)
-            # The translations input is relative displacement, we need to add the template's initial position
-            if root_initial_translation is not None:
+            # Add initial offset to translations unless absolute_root is enabled
+            if root_initial_translation is not None and not absolute_root:
                 final_translations = np.ascontiguousarray(translations + root_initial_translation)
                 print(
                     f"Applying root translation to '{fbx_node_name}', frames={num_frames}, "
@@ -359,6 +359,7 @@ def _convert_smplh_to_woodfbx(
     scale=100,
     smplh_to_fbx_mapping=None,
     clear_animations=True,
+    absolute_root=False,
 ):
     """
     Convert SMPL-H parameters to FBX using a template FBX file.
@@ -441,6 +442,7 @@ def _convert_smplh_to_woodfbx(
         fps=fps,
         smplh_to_fbx_mapping=smplh_to_fbx_mapping,
         name="SMPLH_Animation",
+        absolute_root=absolute_root,
     )
 
     # Save to temporary file first, then copy to final destination
@@ -503,6 +505,7 @@ class SMPLH2WoodFBX:
         template_fbx_path: str = "./assets/wooden_models/boy_Rigging_smplx_tex.fbx",
         smplh_to_fbx_mapping: Optional[Dict[str, str]] = None,
         scale: float = 100,
+        absolute_root: bool = False,
     ):
         """
         Initialize the converter.
@@ -511,11 +514,13 @@ class SMPLH2WoodFBX:
             template_fbx_path: Path to the template FBX file
             smplh_to_fbx_mapping: Custom mapping from SMPL-H joint names to FBX node names
             scale: Scale factor for translation (default 100 for m to cm conversion)
+            absolute_root: Whether translations are absolute world coordinates
         """
         print(f"[{self.__class__.__name__}] Template FBX: {template_fbx_path}")
         self.template_fbx_path = template_fbx_path
         self.smplh_to_fbx_mapping = smplh_to_fbx_mapping
         self.scale = scale
+        self.absolute_root = absolute_root
 
         # Analyze template FBX to detect joint names
         self._analyze_template()
@@ -555,7 +560,7 @@ class SMPLH2WoodFBX:
                 mapping[smplh_name] = SMPLH_TO_LOWERCASE_MAPPING[smplh_name]
         return mapping
 
-    def convert_npz_to_fbx(self, npz_file, outname, fps=30, clear_animations=True):
+    def convert_npz_to_fbx(self, npz_file, outname, fps=30, clear_animations=True, absolute_root=None):
         """
         Convert an npz file containing SMPL-H parameters to FBX.
 
@@ -564,6 +569,7 @@ class SMPLH2WoodFBX:
             outname: Output FBX file path
             fps: Frame rate
             clear_animations: Whether to clear existing animations in template
+            absolute_root: Whether to treat root as absolute (overrides self.absolute_root)
 
         Returns:
             bool: True if successful
@@ -583,6 +589,7 @@ class SMPLH2WoodFBX:
             scale=self.scale,
             smplh_to_fbx_mapping=self.smplh_to_fbx_mapping,
             clear_animations=clear_animations,
+            absolute_root=absolute_root if absolute_root is not None else self.absolute_root,
         )
 
     def convert_params_to_fbx(self, params, outname, clear_animations=True):
@@ -616,6 +623,7 @@ class SMPLH2WoodFBX:
             scale=self.scale,
             smplh_to_fbx_mapping=self.smplh_to_fbx_mapping,
             clear_animations=clear_animations,
+            absolute_root=self.absolute_root,
         )
 
 

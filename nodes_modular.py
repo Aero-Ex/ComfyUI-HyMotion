@@ -21,6 +21,7 @@ from .hymotion.pipeline.motion_diffusion import length_to_mask, randn_tensor, Mo
 from .hymotion.utils.geometry import rot6d_to_rotation_matrix, rotation_matrix_to_rot6d, axis_angle_to_matrix
 from .hymotion.pipeline.body_model import WoodenMesh, construct_smpl_data_dict
 from .hymotion.utils.downloader import download_file, get_model_path, MODEL_METADATA
+from .hymotion.utils.data_types import HYMotionData, HYMotionTextEmbeds, HYMotionFrame
 from .nodes_3d_viewer import HYMotionFBXPlayer, HYMotion3DModelLoader
 
 # Retargeting imports
@@ -138,31 +139,7 @@ class HYMotionDiT:
 
 
 
-class HYMotionData:
-    """Class to hold motion data results"""
-    def __init__(self, output_dict: Dict[str, Any], text: str, duration: float, seeds: List[int], device_info: str = "unknown"):
-        self.output_dict = output_dict
-        self.text = text
-        self.duration = duration
-        self.seeds = seeds
-        self.device_info = device_info
-        self.batch_size = output_dict["keypoints3d"].shape[0] if "keypoints3d" in output_dict else 1
 
-
-class HYMotionTextEmbeds:
-    """Wrapper for encoded text embeddings"""
-    def __init__(self, vtxt, ctxt, ctxt_length, text=""):
-        self.vtxt = vtxt  # [batch, 1, 768] - CLIP embeddings
-        self.ctxt = ctxt  # [batch, max_len, 4096] - Qwen3 embeddings
-        self.ctxt_length = ctxt_length  # [batch] - actual lengths
-        self.text = text
-
-
-class HYMotionFrame:
-    """Wrapper for a single frame of motion data"""
-    def __init__(self, rot6d: torch.Tensor, transl: torch.Tensor):
-        self.rot6d = rot6d  # [1, 22, 6]
-        self.transl = transl  # [1, 3]
 
 
 # ============================================================================
@@ -214,7 +191,6 @@ class HYMotionDiTLoader:
                 if os.path.isdir(potential_path):
                     model_dir = potential_path
                     break
-                    
         if model_dir is None:
             raise FileNotFoundError(f"Model directory not found: {model_name}")
             
@@ -740,8 +716,41 @@ class HYMotionSampler:
                     "step": 8,
                     "tooltip": "Frames processed at once for body model. Higher = faster but more VRAM."
                 }),
+                "motion_data": ("HYMOTION_DATA", {"tooltip": "Optional previous motion to chain from. Automatically uses the last frame as the start."}),
                 "first_frame": ("HYMOTION_FRAME", {"tooltip": "Optional starting pose for the motion"}),
-                "last_frame": ("HYMOTION_FRAME", {"tooltip": "Optional ending pose for the motion"}),
+                # "last_frame": ("HYMOTION_FRAME", {"tooltip": "Optional ending pose for the motion"}),  # HIDDEN: Feature in development
+                "denoise": ("FLOAT", {
+                    "default": 1.0, 
+                    "min": 0.0, 
+                    "max": 1.0, 
+                    "step": 0.01,
+                    "tooltip": "Controls how much of the motion is generated from scratch. < 1.0 requires first_frame or last_frame."
+                }),
+                "transition_frames": ("INT", {
+                    "default": 5, 
+                    "min": 0, 
+                    "max": 30, 
+                    "step": 1,
+                    "tooltip": "Number of frames at the start/end to smoothly blend from the input pose. Helps eliminate jumps."
+                }),
+                "smoothing_sigma": ("FLOAT", {
+                    "default": 1.0, 
+                    "min": 0.1, 
+                    "max": 5.0, 
+                    "step": 0.1,
+                    "tooltip": "Rotation smoothing strength. Higher = smoother but less reactive."
+                }),
+                "smoothing_window": ("INT", {
+                    "default": 11, 
+                    "min": 1, 
+                    "max": 51, 
+                    "step": 2,
+                    "tooltip": "Translation smoothing window (must be odd). Higher = smoother but can 'float' more."
+                }),
+                "force_origin": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Force the animation to start at (0,0) in the XZ plane, ignoring the world position of the input frame."
+                }),
             }
         }
     
@@ -759,7 +768,11 @@ class HYMotionSampler:
                align_ground: bool = True, ground_offset: float = 0.0,
                skip_smoothing: bool = False, body_chunk_size: int = 64,
                first_frame: Optional[HYMotionFrame] = None, 
-               last_frame: Optional[HYMotionFrame] = None):
+               last_frame: Optional[HYMotionFrame] = None,
+               denoise: float = 1.0, transition_frames: int = 5,
+               smoothing_sigma: float = 1.0, smoothing_window: int = 11,
+               motion_data: Optional[Dict[str, Any]] = None,
+               force_origin: bool = False):
         
         def safe_float(v, default):
             try:
@@ -773,6 +786,11 @@ class HYMotionSampler:
         atol = safe_float(atol, 1e-4)
         rtol = safe_float(rtol, 1e-4)
         ground_offset = safe_float(ground_offset, 0.0)
+        denoise = safe_float(denoise, 1.0)
+        transition_frames = int(transition_frames)
+        smoothing_sigma = safe_float(smoothing_sigma, 1.0)
+        smoothing_window = int(smoothing_window)
+        if smoothing_window % 2 == 0: smoothing_window += 1 # Must be odd
 
         print(f"[HY-Motion] DEBUG: num_samples received = {num_samples}")
         print(f"[HY-Motion] Generating {duration}s motion with {num_samples} sample(s)")
@@ -843,27 +861,78 @@ class HYMotionSampler:
         last_latent = None
         root_offset = torch.zeros((1, 3), device=dit_model.device)
         
+        # Motion Chaining: If motion_data is provided and first_frame is not,
+        # automatically extract the last frame of the input motion.
+        if motion_data is not None and first_frame is None:
+            print("[HY-Motion] Motion chaining detected: Extracting last frame from input motion_data")
+            # motion_data is a Dict[str, Any] wrapping HYMotionData
+            # We need to get the HYMotionData object or its output_dict
+            # In ComfyUI, if it's a custom type, it might be the object itself or a dict.
+            # Based on Node 3.5 (HYMotionExtractFrame), it returns a HYMotionData object.
+            
+            # Let's assume motion_data is the HYMotionData object (or has output_dict)
+            try:
+                # If it's a dict from another node
+                m_data = motion_data.get("motion_data") if isinstance(motion_data, dict) else motion_data
+                output_dict = m_data.output_dict
+                m_rot6d = output_dict["rot6d"] # [B, L, J, 6]
+                m_transl = output_dict["transl"] # [B, L, 3]
+                
+                # Extract last frame (index -1)
+                last_idx = m_rot6d.shape[1] - 1
+                first_frame = HYMotionFrame(
+                    rot6d=m_rot6d[0:1, last_idx:last_idx+1, :, :].clone(),
+                    transl=m_transl[0:1, last_idx:last_idx+1, :].clone()
+                )
+                print(f"[HY-Motion] Successfully extracted frame {last_idx} for chaining.")
+            except Exception as e:
+                try:
+                    first_frame = HYMotionFrame(rot6d=m_rot6d[:, -1, :22].cpu(), transl=m_transl[:, -1].cpu())
+                    print(f"[HY-Motion] Extracted last frame for chaining (forced 22 joints fallback)")
+                except Exception as e2:
+                    print(f"[HY-Motion] WARNING: Failed to extract last frame for chaining: {e2}")
+
+        # UNIFIED JOINT TRUNCATION: Ensure all reference frames are 22 joints for the Sampler
+        orig_first_frame = first_frame
+        orig_last_frame = last_frame
+        
+        if first_frame is not None:
+            f_rot6d = first_frame.rot6d
+            if f_rot6d.dim() == 4: f_rot6d = f_rot6d[:, 0]
+            if f_rot6d.shape[1] > 22:
+                print(f"[HY-Motion] Sampler: Truncating first_frame from {f_rot6d.shape[1]} to 22 joints")
+                first_frame = HYMotionFrame(rot6d=f_rot6d[:, :22], transl=first_frame.transl)
+            else:
+                first_frame = HYMotionFrame(rot6d=f_rot6d, transl=first_frame.transl)
+
+        if last_frame is not None:
+            l_rot6d = last_frame.rot6d
+            if l_rot6d.dim() == 4: l_rot6d = l_rot6d[:, 0]
+            if l_rot6d.shape[1] > 22:
+                print(f"[HY-Motion] Sampler: Truncating last_frame from {l_rot6d.shape[1]} to 22 joints")
+                last_frame = HYMotionFrame(rot6d=l_rot6d[:, :22], transl=last_frame.transl)
+            else:
+                last_frame = HYMotionFrame(rot6d=l_rot6d, transl=last_frame.transl)
+
         if first_frame is not None or last_frame is not None:
             if dit_model.mean is not None and dit_model.std is not None:
                 mean = dit_model.mean.to(dit_model.device)
                 std = dit_model.std.to(dit_model.device)
                 
                 def normalize_frame(frame: HYMotionFrame):
-                    # rot6d: [1, 22, 6], transl: [1, 3]
+                    # frame.rot6d is now guaranteed to be [1, 22, 6]
                     # Flatten to [1, 135]
                     raw = torch.cat([frame.transl.flatten(), frame.rot6d.flatten()]).unsqueeze(0)
-                    # Pad to 201
+                    
+                    # Pad to 201 (3 pos + 132 rot6d + 66 keypoints placeholders)
                     padded = torch.zeros((1, 201), device=dit_model.device)
-                    padded[:, :raw.shape[1]] = raw
+                    padded[:, :raw.shape[1]] = raw.to(dit_model.device)
+                    
                     # Normalize
-                    # Handle zero std like in decoding
-                    std_eff = torch.where(std < 1e-3, torch.zeros_like(std), std)
-                    # For dimensions with zero std, we just use the mean (latent becomes 0)
-                    # (padded - mean) / std_eff
                     norm = torch.zeros_like(padded)
                     mask = std >= 1e-3
                     norm[:, mask] = (padded[:, mask] - mean[mask]) / std[mask]
-                    return norm.to(dit_model.device)
+                    return norm
 
                 if first_frame is not None:
                     # Extract root offset from first frame (HORIZONTAL ONLY)
@@ -908,8 +977,31 @@ class HYMotionSampler:
             dtype=torch.float32
         )
         
+        # Handle Denoise (Flow Matching style)
+        t_start = 0.0
+        if denoise < 1.0:
+            t_start = 1.0 - denoise
+            if first_latent is not None and last_latent is not None:
+                # Linear interpolation between first and last frames
+                # t_interp: [1, train_frames, 1]
+                t_interp = torch.linspace(0, 1, train_frames, device=dit_model.device).view(1, -1, 1)
+                # x_1_interp = (1-t) * first + t * last
+                x_1_interp = (1.0 - t_interp) * first_latent.unsqueeze(1) + t_interp * last_latent.unsqueeze(1)
+                # x_t = (1-t)x_0 + t*x_1
+                y0 = (1.0 - t_start) * y0 + t_start * x_1_interp
+                print(f"[HY-Motion] Denoise enabled: starting ODE at t={t_start:.4f} with First->Last interpolation")
+            elif first_latent is not None:
+                y0 = (1.0 - t_start) * y0 + t_start * first_latent.unsqueeze(1)
+                print(f"[HY-Motion] Denoise enabled: starting ODE at t={t_start:.4f} using first_frame as base")
+            elif last_latent is not None:
+                y0 = (1.0 - t_start) * y0 + t_start * last_latent.unsqueeze(1)
+                print(f"[HY-Motion] Denoise enabled: starting ODE at t={t_start:.4f} using last_frame as base")
+            else:
+                t_start = 0.0
+                print("[HY-Motion] WARNING: Denoise < 1.0 requires first_frame or last_frame. Ignoring denoise.")
+        
         if torch.isnan(y0).any():
-            print(f"[HY-Motion] ERROR: Initial noise y0 contains NaNs!")
+            print(f"[HY-Motion] ERROR: Initial noise/latent y0 contains NaNs!")
         
         # Create masks using train_frames
         ctxt_mask_temporal = length_to_mask(ctxt_length, ctxt.shape[1]).to(dit_model.device)
@@ -980,14 +1072,43 @@ class HYMotionSampler:
                 x_pred_uncond, x_pred_cond = x_pred.chunk(2)
                 x_pred = x_pred_uncond + cfg_scale * (x_pred_cond - x_pred_uncond)
             
-            # Velocity Overriding (Mathematically Correct Conditioning for Flow Matching)
-            # We override the predicted velocity for conditioned frames to ensure they reach 
-            # the target latent at t=1.
-            # Formula: v = target - noise_at_t0
-            if first_latent is not None:
-                x_pred[:, 0, :] = first_latent - y0[:, 0, :]
-            if last_latent is not None:
-                x_pred[:, num_frames - 1, :] = last_latent - y0[:, num_frames - 1, :]
+            # Temporal Velocity Blending (Smooth Transition)
+            # We override/guide the predicted velocity for the first/last 'transition_frames'
+            # to ensure a smooth takeoff/landing from the input frames.
+            if first_latent is not None or last_latent is not None:
+                # w: [1, train_frames, 1]
+                w = torch.zeros((1, x_pred.shape[1], 1), device=x.device)
+                
+                if first_latent is not None:
+                    # Start guidance
+                    w[:, 0, :] = 1.0
+                    if transition_frames > 0:
+                        for i in range(1, transition_frames + 1):
+                            if i < x_pred.shape[1]:
+                                w[:, i, :] = max(w[:, i, :].item(), 1.0 - (i / (transition_frames + 1)))
+                
+                if last_latent is not None:
+                    # End guidance
+                    w[:, num_frames - 1, :] = 1.0
+                    if transition_frames > 0:
+                        for i in range(1, transition_frames + 1):
+                            idx = num_frames - 1 - i
+                            if idx >= 0:
+                                w[:, idx, :] = max(w[:, idx, :].item(), 1.0 - (i / (transition_frames + 1)))
+                
+                # Target velocity to reach conditioned frames at t=1
+                # Formula: v = target - noise_at_t0
+                # Note: We use the interpolated/repeated base for target velocity
+                if first_latent is not None and last_latent is not None:
+                    t_interp = torch.linspace(0, 1, train_frames, device=x.device).view(1, -1, 1)
+                    v_target = ((1.0 - t_interp) * first_latent.unsqueeze(1) + t_interp * last_latent.unsqueeze(1)) - y0
+                elif first_latent is not None:
+                    v_target = first_latent.unsqueeze(1) - y0
+                else:
+                    v_target = last_latent.unsqueeze(1) - y0
+                
+                # Blend predicted velocity with target velocity
+                x_pred = (1.0 - w) * x_pred + w * v_target
             
             if torch.isnan(x_pred).any():
                 print(f"[HY-Motion] ERROR: DiT forward produced NaNs at t={t.item()}!")
@@ -1004,7 +1125,7 @@ class HYMotionSampler:
             return x_pred
         
         # Use torchdiffeq.odeint (matching official implementation)
-        t = torch.linspace(0, 1, validation_steps + 1, device=dit_model.device)
+        t = torch.linspace(t_start, 1, validation_steps + 1, device=dit_model.device)
         
         with torch.no_grad():
             # Match official research paper: default to dopri5 with 1e-4 rtol/atol
@@ -1052,6 +1173,20 @@ class HYMotionSampler:
         body_rot6d = latent_denorm[..., 9:9+21*6].reshape(B, L, 21, 6).clone()
         rot6d = torch.cat([root_rot6d, body_rot6d], dim=2)  # (B, L, 22, 6)
         
+        # Hard-Pinning: Force the raw output to match the target poses exactly if provided.
+        # This eliminates any "generation drift" from the DiT model.
+        # NOTE: We must use RELATIVE translations (subtract root_offset) because root_offset 
+        # is added back at the very end of the sample method.
+        if first_frame is not None:
+            print("[HY-Motion] Hard-Pinning: Forcing Frame 0 to match first_frame exactly (Relative)")
+            transl[:, 0, :] = (first_frame.transl.to(transl) - root_offset.to(transl))
+            rot6d[:, 0, :, :] = first_frame.rot6d.to(rot6d)
+            
+        if last_frame is not None:
+            print("[HY-Motion] Hard-Pinning: Forcing Final Frame to match last_frame exactly (Relative)")
+            transl[:, -1, :] = (last_frame.transl.to(transl) - root_offset.to(transl))
+            rot6d[:, -1, :, :] = last_frame.rot6d.to(rot6d)
+        
         # Apply motion smoothing (matching official logic) unless skip_smoothing is enabled
         if skip_smoothing:
             print("[HY-Motion] Skipping smoothing for faster output")
@@ -1059,22 +1194,22 @@ class HYMotionSampler:
             transl_smooth = transl
         else:
             # Official uses SLERP on quaternions for rotations and Savgol for translations
-            rot6d_smooth = MotionGeneration.smooth_with_slerp(rot6d, sigma=1.0)
+            rot6d_smooth = MotionGeneration.smooth_with_slerp(rot6d, sigma=smoothing_sigma)
             # Savgol filter with window=11, polyorder=5 (matching official)
-            transl_smooth = MotionGeneration.smooth_with_savgol(transl, window_length=11, polyorder=5)
+            transl_smooth = MotionGeneration.smooth_with_savgol(transl, window_length=smoothing_window, polyorder=5)
             
             # Ramped Drift Correction: Ensures conditioned frames match exactly while preserving smoothing
+            # We anchor the correction to the TARGET poses (which are now in 'transl' and 'rot6d' due to Hard-Pinning)
             if first_frame is not None and last_frame is not None:
-                print("[HY-Motion] Applying ramped drift correction for seamless loop/transition")
+                print("[HY-Motion] Applying ramped drift correction for seamless loop/transition (Anchored to Targets)")
                 drift_start = transl_smooth[:, 0, :] - transl[:, 0, :]
                 drift_end = transl_smooth[:, -1, :] - transl[:, -1, :]
-                print(f"[HY-Motion] DEBUG: Smoothing drift - Start: {drift_start.cpu().numpy()}, End: {drift_end.cpu().numpy()}")
                 t_ramp = torch.linspace(0, 1, num_frames, device=transl.device).view(1, -1, 1)
                 ramp = (1 - t_ramp) * drift_start.unsqueeze(1) + t_ramp * drift_end.unsqueeze(1)
                 transl_smooth -= ramp
                 
                 # Ramped Rotation Blending (eases the transition from pinned pose into smoothed sequence)
-                blend_len = min(10, num_frames // 3)
+                blend_len = min(15, num_frames // 3)
                 ramp_rot = torch.linspace(1, 0, blend_len, device=rot6d_smooth.device).view(1, -1, 1, 1)
                 rot6d_smooth[:, :blend_len, :, :] = ramp_rot * rot6d[:, :blend_len, :, :] + (1 - ramp_rot) * rot6d_smooth[:, :blend_len, :, :]
                 
@@ -1082,112 +1217,237 @@ class HYMotionSampler:
                 rot6d_smooth[:, -blend_len:, :, :] = (1 - ramp_rot_end) * rot6d_smooth[:, -blend_len:, :, :] + ramp_rot_end * rot6d[:, -blend_len:, :, :]
                 
             elif first_frame is not None:
-                print("[HY-Motion] Correcting smoothing drift at start frame")
+                print("[HY-Motion] Correcting smoothing drift at start frame (Anchored to Target)")
                 drift = transl_smooth[:, 0, :] - transl[:, 0, :]
-                print(f"[HY-Motion] DEBUG: Smoothing drift at start: {drift.cpu().numpy()}")
                 transl_smooth -= drift.unsqueeze(1)
                 
                 # Ramped Rotation Blending
-                blend_len = min(10, num_frames // 3)
+                blend_len = min(15, num_frames // 3)
                 ramp_rot = torch.linspace(1, 0, blend_len, device=rot6d_smooth.device).view(1, -1, 1, 1)
                 rot6d_smooth[:, :blend_len, :, :] = ramp_rot * rot6d[:, :blend_len, :, :] + (1 - ramp_rot) * rot6d_smooth[:, :blend_len, :, :]
                 
             elif last_frame is not None:
-                print("[HY-Motion] Correcting smoothing drift at end frame")
+                print("[HY-Motion] Correcting smoothing drift at end frame (Anchored to Target)")
                 drift = transl_smooth[:, -1, :] - transl[:, -1, :]
-                print(f"[HY-Motion] DEBUG: Smoothing drift at end: {drift.cpu().numpy()}")
                 transl_smooth -= drift.unsqueeze(1)
                 
                 # Ramped Rotation Blending
-                blend_len = min(10, num_frames // 3)
+                blend_len = min(15, num_frames // 3)
                 ramp_rot_end = torch.linspace(0, 1, blend_len, device=rot6d_smooth.device).view(1, -1, 1, 1)
                 rot6d_smooth[:, -blend_len:, :, :] = (1 - ramp_rot_end) * rot6d_smooth[:, -blend_len:, :, :] + ramp_rot_end * rot6d[:, -blend_len:, :, :]
-            
-            # Detailed Transition Logging (First 5 frames)
+
+            # Detailed Transition Logging (Start & End)
+            # We add root_offset back for the logs so the user sees absolute coordinates
+            print("[HY-Motion] === SEAMLESS LOOP QUALITY CHECK (Absolute Coordinates) ===")
             if first_frame is not None:
-                print("[HY-Motion] DEBUG: Detailed Transition (First 5 frames):")
-                target_rot = first_frame.rot6d.to(rot6d_smooth.device)
-                for i in range(min(5, num_frames)):
-                    # Raw values (before smoothing)
-                    r_t = transl[0, i, :].cpu().numpy()
-                    r_r_diff = torch.abs(rot6d[0, i, :, :] - target_rot).mean().item()
-                    
-                    # Smoothed values
-                    s_t = transl_smooth[0, i, :].cpu().numpy()
-                    s_r_diff = torch.abs(rot6d_smooth[0, i, :, :] - target_rot).mean().item()
-                    
-                    print(f"  Frame {i}:")
-                    print(f"    RAW:    Transl={r_t}, RotDiff={r_r_diff:.6f}")
-                    print(f"    SMOOTH: Transl={s_t}, RotDiff={s_r_diff:.6f}")
+                target_t = first_frame.transl.to(transl_smooth).flatten()
+                target_r = first_frame.rot6d.to(rot6d_smooth)
+                
+                raw_t = (transl[:, 0, :] + root_offset.to(transl)).flatten()
+                raw_r = rot6d[:, 0, :, :]
+                
+                smooth_t = (transl_smooth[:, 0, :] + root_offset.to(transl_smooth)).flatten()
+                smooth_r = rot6d_smooth[:, 0, :, :]
+                
+                t_diff_raw = torch.norm(raw_t - target_t).item()
+                t_diff_smooth = torch.norm(smooth_t - target_t).item()
+                r_diff_raw = torch.abs(raw_r - target_r).mean().item()
+                r_diff_smooth = torch.abs(smooth_r - target_r).mean().item()
+                
+                print(f"[HY-Motion] START FRAME (0):")
+                print(f"  Target Transl: {target_t.cpu().numpy()}")
+                print(f"  Raw Transl:    {raw_t.cpu().numpy()} (Diff: {t_diff_raw:.6f})")
+                print(f"  Smooth Transl: {smooth_t.cpu().numpy()} (Diff: {t_diff_smooth:.6f})")
+                print(f"  Rot Diff (Raw):    {r_diff_raw:.6f}")
+                print(f"  Rot Diff (Smooth): {r_diff_smooth:.6f}")
+
+            if last_frame is not None:
+                target_t = last_frame.transl.to(transl_smooth).flatten()
+                target_r = last_frame.rot6d.to(rot6d_smooth)
+                
+                raw_t = (transl[:, -1, :] + root_offset.to(transl)).flatten()
+                raw_r = rot6d[:, -1, :, :]
+                
+                smooth_t = (transl_smooth[:, -1, :] + root_offset.to(transl_smooth)).flatten()
+                smooth_r = rot6d_smooth[:, -1, :, :]
+                
+                t_diff_raw = torch.norm(raw_t - target_t).item()
+                t_diff_smooth = torch.norm(smooth_t - target_t).item()
+                r_diff_raw = torch.abs(raw_r - target_r).mean().item()
+                r_diff_smooth = torch.abs(smooth_r - target_r).mean().item()
+                
+                print(f"[HY-Motion] END FRAME ({num_frames-1}):")
+                print(f"  Target Transl: {target_t.cpu().numpy()}")
+                print(f"  Raw Transl:    {raw_t.cpu().numpy()} (Diff: {t_diff_raw:.6f})")
+                print(f"  Smooth Transl: {smooth_t.cpu().numpy()} (Diff: {t_diff_smooth:.6f})")
+                print(f"  Rot Diff (Raw):    {r_diff_raw:.6f}")
+                print(f"  Rot Diff (Smooth): {r_diff_smooth:.6f}")
+            print("[HY-Motion] ===================================")
+        
+        # Handle 52-joint upsampling if original inputs were 52 joints
+        output_52_joints = False
+        if (orig_first_frame and orig_first_frame.rot6d.shape[-2] == 52) or \
+           (orig_last_frame and orig_last_frame.rot6d.shape[-2] == 52):
+            output_52_joints = True
+            print(f"[HY-Motion] 52-Joint Reconstruction: Upsampling AI results ({L} frames) to high-fidelity...")
             
-            print(f"[HY-Motion] DEBUG: Post-smoothing transl[0]: {transl_smooth[:, 0, :].cpu().numpy()}")
+            # Create full 52-joint tensor [B, L, 52, 6]
+            full_rot6d = torch.zeros((B, L, 52, 6), device=rot6d_smooth.device)
+            # Initialize with Identity 6D
+            full_rot6d[..., 0] = 1.0
+            full_rot6d[..., 4] = 1.0
+            
+            # Fill first 22 with AI results
+            full_rot6d[:, :, :22, :] = rot6d_smooth
+            
+            # Extract hand poses [1, 30, 6]
+            h_start = None
+            h_end = None
+            if orig_first_frame is not None and orig_first_frame.rot6d.dim() >= 2:
+                f_rot = orig_first_frame.rot6d
+                if f_rot.dim() == 4: f_rot = f_rot[:, 0]
+                if f_rot.shape[1] == 52:
+                    h_start = f_rot[:, 22:].to(rot6d_smooth.device)
+            
+            if orig_last_frame is not None and orig_last_frame.rot6d.dim() >= 2:
+                l_rot = orig_last_frame.rot6d
+                if l_rot.dim() == 4: l_rot = l_rot[:, 0]
+                if l_rot.shape[1] == 52:
+                    h_end = l_rot[:, 22:].to(rot6d_smooth.device)
+                
+            # Fill hand joints (22-52)
+            if h_start is not None and h_end is not None:
+                # Interpolate hand poses smoothly across the sequence
+                t_lerp = torch.linspace(0, 1, L, device=rot6d_smooth.device).view(1, L, 1, 1)
+                full_rot6d[:, :, 22:, :] = (1 - t_lerp) * h_start.unsqueeze(1) + t_lerp * h_end.unsqueeze(1)
+                print("[HY-Motion] Hands: Blending custom start and end hand poses.")
+            elif h_start is not None:
+                full_rot6d[:, :, 22:, :] = h_start.unsqueeze(1)
+                print("[HY-Motion] Hands: Persisting custom start hand pose.")
+            elif h_end is not None:
+                full_rot6d[:, :, 22:, :] = h_end.unsqueeze(1)
+                print("[HY-Motion] Hands: Persisting custom end hand pose.")
+            
+            rot6d_smooth = full_rot6d
+            num_joints = 52
         
         # Convert rot6d to rotation matrices
         rot_mat = rot6d_to_rotation_matrix(rot6d_smooth.reshape(-1, 6)).reshape(B, L, num_joints, 3, 3)
         
-        # Compute 3D keypoints using the body model (cached for speed)
+        # Prepare values for output_dict
+        # If force_origin is enabled, we don't add the root_offset back here, it's handled later.
+        # Otherwise, add root_offset to transl_cpu for concatenation.
+        final_offset = torch.zeros_like(root_offset) if force_origin else root_offset
+        transl_cpu = (transl_smooth + final_offset.to(transl_smooth)).cpu()
+        rot6d_cpu = rot6d_smooth.cpu()
+        root_rot_mat = rot_mat[:, :, 0].cpu() # (B, L, 3, 3)
+        
+        final_text = text_embeds.text
+        final_duration = duration
+        
+        # Motion Concatenation: If motion_data was provided, prepend it to the current output
+        if motion_data is not None:
+            try:
+                m_data = motion_data.get("motion_data") if isinstance(motion_data, dict) else motion_data
+                prev_dict = m_data.output_dict
+                
+                print(f"[HY-Motion] STITCHING ANALYTICS: Previous segment ({m_data.duration:.1f}s) -> New segment ({duration:.1f}s)")
+                
+                # We concatenate BEFORE running BodyModel to ensure the whole sequence is consistent.
+                # Use CPU tensors for concatenation, THEN move to GPU for BodyModel
+                p_rot6d = prev_dict["rot6d"]
+                p_trans = prev_dict["transl"]
+                p_root_rot = prev_dict["root_rotations_mat"]
+                
+                # High-visibility stitch check
+                p_v = p_trans[0, -1].cpu().numpy()
+                o_v = transl_cpu[0, 0].cpu().numpy()
+                dist = np.linalg.norm(p_v - o_v)
+                print(f"  - Translation Connection: DISTANCE={dist:.6f}")
+                if dist > 1e-4:
+                    print(f"    ⚠ WARNING: Translation discontinuity detected ({p_v} -> {o_v})")
+
+                # Match batch sizes if needed
+                if p_rot6d.shape[0] != rot6d_cpu.shape[0]:
+                    if p_rot6d.shape[0] == 1: p_rot6d = p_rot6d.repeat(rot6d_cpu.shape[0], 1, 1, 1)
+                    else: rot6d_cpu = rot6d_cpu.repeat(p_rot6d.shape[0], 1, 1, 1)
+                
+                if p_trans.shape[0] != transl_cpu.shape[0]:
+                    if p_trans.shape[0] == 1: p_trans = p_trans.repeat(transl_cpu.shape[0], 1, 1)
+                    else: transl_cpu = transl_cpu.repeat(p_trans.shape[0], 1, 1)
+                    
+                if p_root_rot.shape[0] != root_rot_mat.shape[0]:
+                    if p_root_rot.shape[0] == 1: p_root_rot = p_root_rot.repeat(root_rot_mat.shape[0], 1, 1, 1)
+                    else: root_rot_mat = root_rot_mat.repeat(p_root_rot.shape[0], 1, 1, 1)
+
+                rot6d_cpu = torch.cat([p_rot6d, rot6d_cpu], dim=1)
+                transl_cpu = torch.cat([p_trans, transl_cpu], dim=1)
+                root_rot_mat = torch.cat([p_root_rot, root_rot_mat], dim=1)
+                
+                final_text = f"{m_data.text} -> {final_text}"
+                final_duration = m_data.duration + duration
+                print(f"[HY-Motion] Concatenated previous motion ({m_data.duration:.1f}s) with new motion ({duration:.1f}s)")
+            except Exception as e:
+                print(f"[HY-Motion] WARNING: Failed to join motions: {e}")
+
+        # === Skeletal Self-Healing: Regenerate keypoints3d for the ENTIRE sequence ===
+        # This ensures that even if previous segments had "poisoned" (local) keypoints,
+        # they are now recalculated correctly in world space.
         global _WOODEN_MESH_CACHE
         if _WOODEN_MESH_CACHE is None:
-            print("[HY-Motion] First run: Loading 3D body model for skeletal decoding...")
-            _WOODEN_MESH_CACHE = WoodenMesh().to(dit_model.device).eval()
+             print("[HY-Motion] Initializing 3D body model for skeletal decoding...")
+             _WOODEN_MESH_CACHE = WoodenMesh().to(dit_model.device).eval()
         
         body_model = _WOODEN_MESH_CACHE.to(dit_model.device)
-        
         with torch.no_grad():
             params = {
-                "rot6d": rot6d_smooth.to(dit_model.device),
-                "trans": transl_smooth.to(dit_model.device)
+                "rot6d": rot6d_cpu.to(dit_model.device),
+                "trans": transl_cpu.to(dit_model.device)
             }
+            # process in chunks to save VRAM
+            print(f"[HY-Motion] Skeletal Decoding: Processing full sequence ({transl_cpu.shape[1]} frames)...")
             body_out = body_model.forward_batch(params, chunk_size=body_chunk_size)
-            keypoints3d = body_out["keypoints3d"]
-            vertices = body_out["vertices"]
-            
-            # Move to CPU for further processing
-            transl_cpu = transl_smooth.cpu()
-            rot6d_cpu = rot6d_smooth.cpu()
-            rot_mat_cpu = rot_mat.cpu()
-            
-            # Align with ground (ensure character doesn't fly or sink)
-            if align_ground:
-                if first_frame is not None:
-                    print("[HY-Motion] Skipping automatic ground alignment because first_frame is provided (preserving previous height)")
-                else:
-                    # Find the absolute minimum Y across all vertices and all time steps
-                    min_y = vertices[..., 1].amin(dim=(1, 2), keepdim=True) # (B, 1, 1)
-                    
-                    # Apply offset to move lowest point to 0, then add user offset
-                    total_offset = -min_y.squeeze(-1) + ground_offset # (B, 1)
-                    
-                    print(f"[HY-Motion] Ground Aligning: min_y={min_y.mean().item():.4f}m, applying +{total_offset.mean().item():.4f}m offset")
-                    
-                    keypoints3d[..., 1] += total_offset.unsqueeze(-1)
-                    transl_cpu[..., 1] += total_offset
-            elif ground_offset != 0:
-                print(f"[HY-Motion] Applying manual ground offset: {ground_offset}m")
-                transl_cpu[..., 1] += ground_offset
-                keypoints3d[..., 1] += ground_offset
+            keypoints3d = body_out["keypoints3d"].cpu()
+            vertices = body_out["vertices"].cpu() # Optional, but keeps Data object intact
+
+        # Ground Alignment (if enabled)
+        # Note: We only auto-align if this is the FIRST segment (no first_frame)
+        if align_ground and first_frame is None:
+            min_y = vertices[..., 1].amin(dim=(1, 2), keepdim=True)
+            total_offset = -min_y.squeeze(-1) + ground_offset
+            print(f"[HY-Motion] Ground Aligning FULL sequence: applying +{total_offset.mean().item():.4f}m offset")
+            keypoints3d[..., 1] += total_offset.unsqueeze(-1)
+            transl_cpu[..., 1] += total_offset
+        elif ground_offset != 0 and first_frame is None:
+             # Manual offset applied only if not chained (chained motions already carry the offset)
+             transl_cpu[..., 1] += ground_offset
+             keypoints3d[..., 1] += ground_offset
         
         # Create output dictionary
+        # If force_origin is enabled, we don't add the root_offset back
+        # final_offset = torch.zeros_like(root_offset) if force_origin else root_offset # Already handled above
+        
         output_dict = {
             "rot6d": rot6d_cpu,
-            "transl": transl_cpu + root_offset.cpu(), # Restore root offset
-            "keypoints3d": keypoints3d.cpu() + root_offset.cpu().unsqueeze(1), # Restore root offset to keypoints
-            "root_rotations_mat": rot_mat_cpu[:, :, 0],
+            "transl": transl_cpu,
+            "keypoints3d": keypoints3d,
+            "root_rotations_mat": root_rot_mat,
         }
+        
         print(f"[HY-Motion] DEBUG: Final output transl[0]: {output_dict['transl'][:, 0, :].numpy()}")
         
         # Create motion data wrapper
-        motion_data = HYMotionData(
+        motion_data_out = HYMotionData(
             output_dict=output_dict,
-            text=text_embeds.text, # Pass prompt text from embeddings
-            duration=duration,
+            text=final_text,
+            duration=final_duration,
             seeds=seeds,
             device_info=str(dit_model.device)
         )
         
-        print(f"[HY-Motion] Generated {num_samples} sample(s), {num_frames} frames on {dit_model.device}")
+        print(f"[HY-Motion] Generated {num_samples} sample(s), total {output_dict['rot6d'].shape[1]} frames on {dit_model.device}")
         
-        return (motion_data,)
+        return (motion_data_out,)
     
     # Removed local smoothing helpers in favor of official MotionGeneration methods
 
@@ -1238,6 +1498,22 @@ class HYMotionModularExportFBX:
                     "default": False,
                     "tooltip": "If enabled, removes horizontal movement (X/Z) from root so character stays in place."
                 }),
+                "in_place_x": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Keep character centered on X axis (Side-to-Side)."
+                }),
+                "in_place_y": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Keep character centered on Y axis (Up/Down - prevents jumping/falling)."
+                }),
+                "in_place_z": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Keep character centered on Z axis (Forward/Backward)."
+                }),
+                "absolute_root": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "If enabled, treats root translation as absolute. Resolve jumping issues with offset templates."
+                }),
             }
         }
 
@@ -1248,7 +1524,8 @@ class HYMotionModularExportFBX:
     OUTPUT_NODE = True
 
     def export_fbx(self, motion_data: HYMotionData, template_name: str, fps: float, scale: float, output_dir: str, filename_prefix: str, 
-                   batch_index: int = 0, in_place: bool = False):
+                   batch_index: int = 0, in_place: bool = False, in_place_x: bool = False, in_place_y: bool = False, in_place_z: bool = False,
+                   absolute_root: bool = True):
         # Resolve template path - use dropdown selection or fallback to default
         template_fbx_path = folder_paths.get_full_path("hymotion_fbx_templates", template_name)
             
@@ -1262,7 +1539,7 @@ class HYMotionModularExportFBX:
         try:
             import fbx
             from .hymotion.utils.smplh2woodfbx import SMPLH2WoodFBX
-            fbx_converter = SMPLH2WoodFBX(template_fbx_path=template_fbx_path, scale=scale)
+            fbx_converter = SMPLH2WoodFBX(template_fbx_path=template_fbx_path, scale=scale, absolute_root=absolute_root)
         except ImportError:
             msg = "Error: FBX SDK not installed. Please install it to use FBX export."
             print(f"[HY-Motion] {msg}")
@@ -1293,15 +1570,24 @@ class HYMotionModularExportFBX:
                 rot6d = output_dict["rot6d"][batch_idx].clone()
                 transl = output_dict["transl"][batch_idx].clone()
                 
-                # Apply in-place: zero out horizontal translation (X and Z)
-                if in_place:
-                    # Get the initial horizontal position at frame 0
-                    init_x = transl[0, 0].item()
-                    init_z = transl[0, 2].item()
-                    # Lock X and Z to the initial position (effectively zeroing movement)
-                    transl[:, 0] = init_x
-                    transl[:, 2] = init_z
-                    print(f"[HY-Motion] In-place applied: X/Z locked at ({init_x:.3f}, {init_z:.3f})")
+                # Apply in-place: lock axes based on toggles
+                # HyMotion/SMPL-H space: Y is usually UP, Z is FORWARD, X is SIDE
+                lock_x = in_place_x or in_place
+                lock_z = in_place_z or in_place
+                lock_y = in_place_y
+                
+                if lock_x or lock_y or lock_z:
+                    # Get the initial position at frame 0
+                    init_pos = transl[0].clone()
+                    if lock_x: transl[:, 0] = init_pos[0]
+                    if lock_y: transl[:, 1] = init_pos[1]
+                    if lock_z: transl[:, 2] = init_pos[2]
+                    
+                    locked_axes = []
+                    if lock_x: locked_axes.append("X")
+                    if lock_y: locked_axes.append("Y")
+                    if lock_z: locked_axes.append("Z")
+                    print(f"[HY-Motion] In-place applied (Modular): Locked axes {', '.join(locked_axes)}")
                 
                 # Prepare SMPL-H dictionary for converter
                 smpl_data = construct_smpl_data_dict(rot6d, transl)
@@ -1558,32 +1844,24 @@ class HYMotionLoadNPZ:
     def INPUT_TYPES(s):
         return {
             "required": {
-                "npz_path": ("STRING", {"default": "hymotion_npz/motion.npz"}),
+                "npz_name": (folder_paths.get_filename_list("hymotion_npz"), {
+                    "tooltip": "Select an NPZ file from the output/hymotion_npz or input/hymotion_npz directory."
+                }),
             }
         }
     
+    # ... existing return types/names ...
     RETURN_TYPES = ("HYMOTION_DATA",)
     RETURN_NAMES = ("motion_data",)
     FUNCTION = "load"
     CATEGORY = "HY-Motion/utils"
     
-    def load(self, npz_path):
-        # Resolve path: check output, then input, then absolute
-        full_path = ""
-        if os.path.isabs(npz_path):
-            full_path = npz_path
-        else:
-            # Try output first
-            out_path = os.path.join(COMFY_OUTPUT_DIR, npz_path)
-            if os.path.exists(out_path):
-                full_path = out_path
-            else:
-                # Try input
-                in_path = os.path.join(folder_paths.get_input_directory(), npz_path)
-                if os.path.exists(in_path):
-                    full_path = in_path
-                else:
-                    raise FileNotFoundError(f"NPZ file not found: {npz_path}")
+    def load(self, npz_name, start_frame_idx=0, end_frame_idx=-1):
+        # Resolve path using registered folder_paths
+        full_path = folder_paths.get_full_path("hymotion_npz", npz_name)
+        
+        if not full_path or not os.path.exists(full_path):
+            raise FileNotFoundError(f"NPZ file not found: {npz_name}")
             
         print(f"[HY-Motion] Loading NPZ: {full_path}")
         data = np.load(full_path, allow_pickle=True)
@@ -1593,16 +1871,38 @@ class HYMotionLoadNPZ:
         # Map keys back to tensors
         for key in ["keypoints3d", "rot6d", "transl", "root_rotations_mat"]:
             if key in data:
-                output_dict[key] = torch.from_numpy(data[key]).unsqueeze(0) # Add batch dim
+                tensor = torch.from_numpy(data[key])
+                
+                # Slicing logic
+                total_frames = tensor.shape[0]
+                
+                # Handle end_frame_idx = -1
+                actual_end = end_frame_idx if end_frame_idx != -1 else total_frames
+                actual_start = max(0, min(start_frame_idx, total_frames))
+                actual_end = max(actual_start, min(actual_end, total_frames))
+                
+                sliced_tensor = tensor[actual_start:actual_end]
+                output_dict[key] = sliced_tensor.unsqueeze(0) # Add batch dim
         
         # Extract metadata
         text = str(data.get("text", "loaded motion"))
         duration = float(data.get("duration", 0.0))
         seed = int(data.get("seed", 0))
         
-        # If duration is missing, estimate from frames (30 FPS)
-        if duration <= 0 and "rot6d" in output_dict:
-            duration = output_dict["rot6d"].shape[1] / 30.0
+        # Recalculate duration if sliced
+        if "rot6d" in output_dict:
+            num_frames = output_dict["rot6d"].shape[1]
+            # If duration was 0 or missing, assume 30 FPS
+            if duration <= 0:
+                duration = num_frames / 30.0
+            else:
+                # Scale duration based on frame ratio
+                orig_frames = data["rot6d"].shape[0] if "rot6d" in data else num_frames
+                if orig_frames > 0:
+                    duration = duration * (num_frames / orig_frames)
+            
+            if start_frame_idx != 0 or end_frame_idx != -1:
+                text = f"{text} (frames {actual_start}-{actual_end})"
             
         motion_data = HYMotionData(
             output_dict=output_dict,
@@ -1611,6 +1911,15 @@ class HYMotionLoadNPZ:
             seeds=[seed],
             device_info="cpu"
         )
+
+        start_frame = None
+        end_frame = None
+        if "rot6d" in output_dict:
+            start_frame = HYMotionFrame(output_dict["rot6d"][:, 0], output_dict["transl"][:, 0])
+            end_frame = HYMotionFrame(output_dict["rot6d"][:, -1], output_dict["transl"][:, -1])
+
+        # HIDDEN: Frame outputs disabled for now
+        # return (motion_data, start_frame, end_frame)
         return (motion_data,)
 
 
@@ -1672,17 +1981,34 @@ class HYMotionRetargetFBX:
                     "default": False,
                     "tooltip": "If enabled, removes horizontal movement from the animation so the character stays in one spot. Useful for game development."
                 }),
+                "in_place_x": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Keep character centered on X axis (Side-to-Side)."
+                }),
+                "in_place_y": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Keep character centered on Y axis (Up/Down - prevents jumping/falling)."
+                }),
+                "in_place_z": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Keep character centered on Z axis (Forward/Backward)."
+                }),
+                "preserve_position": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "If enabled, keeps the character's absolute world position from the motion data. Disable to automatically center the character at the start (fixes 'jumps' when stitching)."
+                }),
             }
         }
     
     RETURN_TYPES = ("STRING", "FBX")
-    RETURN_NAMES = ("fbx_paths", "fbx")
+    RETURN_NAMES = ("fbx_path", "fbx")
     FUNCTION = "retarget"
-    CATEGORY = "HY-Motion"
+    CATEGORY = "HY-Motion/view"
     OUTPUT_NODE = True
     
     def retarget(self, motion_data, target_fbx, output_dir="hymotion_retarget", filename_prefix="retarget", 
-                 mapping_file="", yaw_offset=0.0, scale=0.0, neutral_fingers=True, unique_names=True, in_place=False):
+                 mapping_file="", yaw_offset=0.0, scale=0.0, neutral_fingers=True, unique_names=True, 
+                 in_place=False, in_place_x=False, in_place_y=False, in_place_z=False, preserve_position=False):
         """Retarget motion to custom FBX skeleton."""
         
         # Resolve target FBX path robustly
@@ -1779,7 +2105,8 @@ class HYMotionRetargetFBX:
                     mapping = load_bone_mapping(mapping_file, src_skel_loaded, tgt_skel)
                     rots, locs, active = retarget_animation(
                         src_skel_loaded, tgt_skel, mapping, 
-                        scale, yaw_offset, neutral_fingers, in_place
+                        scale, yaw_offset, neutral_fingers, in_place,
+                        in_place_x, in_place_y, in_place_z, preserve_position
                     )
                     
                     # Apply and save
@@ -1819,8 +2146,6 @@ class HYMotionRetargetFBX:
             })
             
         return {"ui": {"fbx": fbx_info}, "result": (result, fbx_info)}
-
-
 
 
 class HYMotionSMPLToData:
@@ -2077,6 +2402,239 @@ class HYMotionModelDownloader:
             
         return ("\n".join(results),)
 
+
+class HYMotionWoodFBXToData:
+    """
+    Extract SMPL-H animation from FBX files rigged with the 52-joint wooden mannequin skeleton.
+    Converts FBX animation to HYMOTION_DATA format for use with HYMotionSampler.
+    """
+    
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "fbx_path": ("STRING", {
+                    "default": "",
+                    "tooltip": "Path to FBX file with SMPL-H skeleton (wooden mannequin format)"
+                }),
+                "start_frame": ("INT", {
+                    "default": 0,
+                    "min": 0,
+                    "max": 10000,
+                    "tooltip": "First frame to extract (0-indexed)"
+                }),
+                "end_frame": ("INT", {
+                    "default": -1,
+                    "min": -1,
+                    "max": 10000,
+                    "tooltip": "Last frame to extract (-1 = all frames)"
+                }),
+                "fps": ("INT", {
+                    "default": 30,
+                    "min": 1,
+                    "max": 120,
+                    "tooltip": "Target frame rate"
+                }),
+            },
+        }
+    
+    RETURN_TYPES = ("HYMOTION_DATA",)
+    RETURN_NAMES = ("motion_data",)
+    FUNCTION = "extract"
+    CATEGORY = "HY-Motion/modular"
+    
+    # SMPL-H joint names in order (52 joints)
+    SMPLH_JOINT_NAMES = [
+        "Pelvis", "L_Hip", "R_Hip", "Spine1", "L_Knee", "R_Knee", "Spine2",
+        "L_Ankle", "R_Ankle", "Spine3", "L_Foot", "R_Foot", "Neck", "L_Collar",
+        "R_Collar", "Head", "L_Shoulder", "R_Shoulder", "L_Elbow", "R_Elbow",
+        "L_Wrist", "R_Wrist",
+        # Left hand fingers
+        "L_Index1", "L_Index2", "L_Index3", "L_Middle1", "L_Middle2", "L_Middle3",
+        "L_Pinky1", "L_Pinky2", "L_Pinky3", "L_Ring1", "L_Ring2", "L_Ring3",
+        "L_Thumb1", "L_Thumb2", "L_Thumb3",
+        # Right hand fingers
+        "R_Index1", "R_Index2", "R_Index3", "R_Middle1", "R_Middle2", "R_Middle3",
+        "R_Pinky1", "R_Pinky2", "R_Pinky3", "R_Ring1", "R_Ring2", "R_Ring3",
+        "R_Thumb1", "R_Thumb2", "R_Thumb3"
+    ]
+    
+    # Lowercase aliases for matching
+    LOWERCASE_ALIASES = {
+        "pelvis": "Pelvis", "l_hip": "L_Hip", "r_hip": "R_Hip", "spine1": "Spine1",
+        "l_knee": "L_Knee", "r_knee": "R_Knee", "spine2": "Spine2", "l_ankle": "L_Ankle",
+        "r_ankle": "R_Ankle", "spine3": "Spine3", "l_foot": "L_Foot", "r_foot": "R_Foot",
+        "neck": "Neck", "l_collar": "L_Collar", "r_collar": "R_Collar", "head": "Head",
+        "l_shoulder": "L_Shoulder", "r_shoulder": "R_Shoulder", "l_elbow": "L_Elbow",
+        "r_elbow": "R_Elbow", "l_wrist": "L_Wrist", "r_wrist": "R_Wrist",
+        # Additional common aliases
+        "left_hip": "L_Hip", "right_hip": "R_Hip", "left_knee": "L_Knee", "right_knee": "R_Knee",
+        "left_ankle": "L_Ankle", "right_ankle": "R_Ankle", "left_foot": "L_Foot", "right_foot": "R_Foot",
+        "left_collar": "L_Collar", "right_collar": "R_Collar", "left_shoulder": "L_Shoulder",
+        "right_shoulder": "R_Shoulder", "left_elbow": "L_Elbow", "right_elbow": "R_Elbow",
+        "left_wrist": "L_Wrist", "right_wrist": "R_Wrist",
+    }
+    
+    def extract(self, fbx_path: str, start_frame: int = 0, end_frame: int = -1, fps: int = 30):
+        try:
+            import fbx
+            from scipy.spatial.transform import Rotation as R
+        except ImportError:
+            raise RuntimeError("FBX SDK not installed. Please install python-fbx.")
+        
+        from .hymotion.utils.geometry import rotation_matrix_to_rot6d
+        
+        # Resolve path
+        if fbx_path.startswith("input/"):
+            fbx_path = os.path.join(folder_paths.get_input_directory(), fbx_path[6:])
+        elif fbx_path.startswith("output/"):
+            fbx_path = os.path.join(folder_paths.get_output_directory(), fbx_path[7:])
+        
+        if not os.path.exists(fbx_path):
+            raise FileNotFoundError(f"FBX file not found: {fbx_path}")
+        
+        print(f"[HY-Motion] Loading FBX: {fbx_path}")
+        
+        # Load FBX
+        fbx_manager = fbx.FbxManager.Create()
+        ios = fbx.FbxIOSettings.Create(fbx_manager, fbx.IOSROOT)
+        fbx_manager.SetIOSettings(ios)
+        
+        importer = fbx.FbxImporter.Create(fbx_manager, "")
+        if not importer.Initialize(fbx_path, -1, fbx_manager.GetIOSettings()):
+            raise RuntimeError(f"Failed to load FBX: {importer.GetStatus().GetErrorString()}")
+        
+        scene = fbx.FbxScene.Create(fbx_manager, "")
+        importer.Import(scene)
+        importer.Destroy()
+        
+        # Collect nodes
+        def collect_nodes(node, nodes_dict=None):
+            if nodes_dict is None:
+                nodes_dict = {}
+            nodes_dict[node.GetName()] = node
+            for i in range(node.GetChildCount()):
+                collect_nodes(node.GetChild(i), nodes_dict)
+            return nodes_dict
+        
+        all_nodes = collect_nodes(scene.GetRootNode())
+        print(f"[HY-Motion] Found {len(all_nodes)} nodes")
+        
+        # Map SMPL-H joints to FBX nodes
+        joint_to_node = {}
+        for i, joint_name in enumerate(self.SMPLH_JOINT_NAMES):
+            # Try exact match
+            if joint_name in all_nodes:
+                joint_to_node[i] = all_nodes[joint_name]
+            # Try lowercase
+            elif joint_name.lower() in all_nodes:
+                joint_to_node[i] = all_nodes[joint_name.lower()]
+            # Try alias
+            else:
+                for alias, canonical in self.LOWERCASE_ALIASES.items():
+                    if canonical == joint_name and alias in all_nodes:
+                        joint_to_node[i] = all_nodes[alias]
+                        break
+        
+        print(f"[HY-Motion] Mapped {len(joint_to_node)}/{len(self.SMPLH_JOINT_NAMES)} joints")
+        if len(joint_to_node) < 22:
+            print(f"[HY-Motion] Warning: Less than 22 body joints found. Available nodes: {list(all_nodes.keys())[:20]}...")
+        
+        # Get animation stack
+        anim_stack = scene.GetCurrentAnimationStack()
+        if not anim_stack:
+            anim_stack_count = scene.GetSrcObjectCount(fbx.FbxCriteria.ObjectType(fbx.FbxAnimStack.ClassId))
+            if anim_stack_count > 0:
+                anim_stack = scene.GetSrcObject(fbx.FbxCriteria.ObjectType(fbx.FbxAnimStack.ClassId), 0)
+        
+        if not anim_stack:
+            raise RuntimeError("No animation found in FBX file")
+        
+        # Get time span
+        local_span = anim_stack.GetLocalTimeSpan()
+        start_time = local_span.GetStart()
+        end_time = local_span.GetStop()
+        
+        # Calculate frame count
+        frame_duration = 1.0 / fps
+        total_duration = end_time.GetSecondDouble() - start_time.GetSecondDouble()
+        total_frames = int(total_duration * fps) + 1
+        
+        if end_frame < 0:
+            end_frame = total_frames - 1
+        end_frame = min(end_frame, total_frames - 1)
+        
+        num_frames = end_frame - start_frame + 1
+        print(f"[HY-Motion] Extracting frames {start_frame} to {end_frame} ({num_frames} frames)")
+        
+        # Extract animation
+        num_joints = len(self.SMPLH_JOINT_NAMES)
+        rot6d = torch.zeros((1, num_frames, num_joints, 6), dtype=torch.float32)
+        transl = torch.zeros((1, num_frames, 3), dtype=torch.float32)
+        
+        # Set identity rotation as default
+        rot6d[:, :, :, 0] = 1.0  # First column of identity
+        rot6d[:, :, :, 4] = 1.0  # Second column of identity
+        
+        fbx_time = fbx.FbxTime()
+        
+        for frame_idx in range(num_frames):
+            actual_frame = start_frame + frame_idx
+            fbx_time.SetSecondDouble(actual_frame * frame_duration)
+            
+            for joint_idx, node in joint_to_node.items():
+                # Get local rotation as Euler angles
+                euler = node.EvaluateLocalRotation(fbx_time)
+                euler_np = np.array([euler[0], euler[1], euler[2]], dtype=np.float64)
+                
+                # Convert Euler (degrees) to rotation matrix
+                rot_mat = R.from_euler('xyz', euler_np, degrees=True).as_matrix()
+                rot_mat_tensor = torch.from_numpy(rot_mat).float().unsqueeze(0)
+                
+                # Convert to 6D rotation
+                r6d = rotation_matrix_to_rot6d(rot_mat_tensor)[0]
+                rot6d[0, frame_idx, joint_idx] = r6d
+                
+                # Extract translation for root (Pelvis)
+                if joint_idx == 0:
+                    trans = node.EvaluateLocalTranslation(fbx_time)
+                    # Convert from cm to meters (typical FBX scale)
+                    transl[0, frame_idx] = torch.tensor([trans[0], trans[1], trans[2]]) / 100.0
+        
+        # Cleanup
+        fbx_manager.Destroy()
+        
+        # Create output dict
+        output_dict = {
+            "rot6d": rot6d,
+            "transl": transl,
+        }
+        
+        # Calculate keypoints3d using wooden mesh if available
+        try:
+            global _WOODEN_MESH_CACHE
+            if _WOODEN_MESH_CACHE is None:
+                _WOODEN_MESH_CACHE = WoodenMesh(device='cpu')
+            
+            smpl_data = construct_smpl_data_dict(rot6d, transl)
+            keypoints = _WOODEN_MESH_CACHE.get_keypoints(smpl_data)
+            output_dict["keypoints3d"] = keypoints
+        except Exception as e:
+            print(f"[HY-Motion] Could not compute keypoints3d: {e}")
+        
+        motion_data = HYMotionData(
+            output_dict=output_dict,
+            text=f"FBX: {os.path.basename(fbx_path)}",
+            duration=num_frames / fps,
+            seeds=[0],
+            device_info="cpu"
+        )
+        
+        print(f"[HY-Motion] Extracted motion: {num_frames} frames, {len(joint_to_node)} joints")
+        
+        return (motion_data,)
+
+
 NODE_CLASS_MAPPINGS_MODULAR = {
     "HYMotionDiTLoader": HYMotionDiTLoader,
     "HYMotionTextEncoderLoader": HYMotionTextEncoderLoader,
@@ -2092,6 +2650,7 @@ NODE_CLASS_MAPPINGS_MODULAR = {
     "HYMotionFBXPlayer": HYMotionFBXPlayer,
     "HYMotion3DModelLoader": HYMotion3DModelLoader,
     "HYMotionModelDownloader": HYMotionModelDownloader,
+    "HYMotionWoodFBXToData": HYMotionWoodFBXToData,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS_MODULAR = {
@@ -2109,7 +2668,9 @@ NODE_DISPLAY_NAME_MAPPINGS_MODULAR = {
     "HYMotionFBXPlayer": "HY-Motion FBX Player",
     "HYMotion3DModelLoader": "HY-Motion 3D Model Loader",
     "HYMotionModelDownloader": "HY-Motion Model Downloader",
+    "HYMotionWoodFBXToData": "HY-Motion WoodFBX to Data",
 }
+
 
 NODE_CLASS_MAPPINGS = {**NODE_CLASS_MAPPINGS_MODULAR}
 NODE_DISPLAY_NAME_MAPPINGS = {**NODE_DISPLAY_NAME_MAPPINGS_MODULAR}

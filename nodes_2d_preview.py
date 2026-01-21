@@ -23,6 +23,7 @@ class HYMotionPreview2D:
                 "elevation": ("INT", {"default": 20, "min": -90, "max": 90, "step": 1, "tooltip": "Vertical camera angle in degrees. 0 is eye-level, 90 is bird's eye view."}),
                 "azimuth": ("INT", {"default": 1, "min": -180, "max": 180, "step": 1, "tooltip": "Horizontal camera rotation in degrees. 0 is front view, 180 is back view."}),
                 "scale": ("FLOAT", {"default": 0.5, "min": 0.1, "max": 10.0, "step": 0.01, "tooltip": "Zoom control. Values > 1.0 zoom out (character appears smaller), values < 1.0 zoom in."}),
+                "force_root": ("BOOLEAN", {"default": False, "tooltip": "If enabled, centers the camera on the character's root for every frame (in-place preview)."}),
             },
             "optional": {
                 "motion_data": ("HYMOTION_DATA", {"tooltip": "Direct motion data input from a sampler node."}),
@@ -34,7 +35,7 @@ class HYMotionPreview2D:
     FUNCTION = "render_preview"
     CATEGORY = "HY-Motion/view"
 
-    def render_preview(self, width, height, up_axis, batch_index, frame_index, frame_skip, keep_duration, max_frames, draw_skeleton, elevation, azimuth, scale, motion_data=None, npz_path=""):
+    def render_preview(self, width, height, up_axis, batch_index, frame_index, frame_skip, keep_duration, max_frames, draw_skeleton, elevation, azimuth, scale, force_root=False, motion_data=None, npz_path=""):
         def safe_float(v, default):
             try:
                 if v is None or v == "": return default
@@ -170,9 +171,21 @@ class HYMotionPreview2D:
             ax = fig.add_subplot(111, projection='3d')
             ax.set_axis_off()
             ax.view_init(elev=elevation, azim=azimuth)
-            ax.set_xlim3d([center[0] - max_range, center[0] + max_range])
-            ax.set_ylim3d([center[1] - max_range, center[1] + max_range])
-            ax.set_zlim3d([center[2] - max_range, center[2] + max_range])
+            
+            joints = keypoints[idx]
+            
+            # Dynamic centering for "Force Root" (in-place)
+            if force_root:
+                # Center on the root joint (Joint 0)
+                # Note: Coordinate remapping has already happened Y -> Z
+                current_center = joints[0]
+            else:
+                # Use global sequence center
+                current_center = center
+
+            ax.set_xlim3d([current_center[0] - max_range, current_center[0] + max_range])
+            ax.set_ylim3d([current_center[1] - max_range, current_center[1] + max_range])
+            ax.set_zlim3d([current_center[2] - max_range, current_center[2] + max_range])
             
             joints = keypoints[idx]
             ax.scatter(joints[:, 0], joints[:, 1], joints[:, 2], c='blue', s=20)

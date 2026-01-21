@@ -302,6 +302,7 @@ class WoodenMesh(torch.nn.Module):
         if "trans" in params:
             trans = params["trans"]
             vertices = vertices + trans[:, None, :]
+            posed_joints = posed_joints + trans[:, None, :]
 
         return {
             "vertices": vertices,
@@ -386,6 +387,18 @@ def construct_smpl_data_dict(
 ) -> dict:
     rotation_matrix = rot6d_to_rotation_matrix(rot6d)
     angle_axis = rotation_matrix_to_angle_axis(rotation_matrix)
+    
+    # Handle [B, L, J, 3] temporal sequences by flattening B and L
+    if angle_axis.dim() == 4:
+        B, L, J, C = angle_axis.shape
+        angle_axis = angle_axis.reshape(B * L, J, C)
+        if transl is not None:
+             # transl usually comes as [B, L, 3] or [B, 3]
+             if transl.dim() == 3:
+                 transl = transl.reshape(B * L, 3)
+             elif transl.dim() == 2 and B * L > B:
+                 # If we have B*L frames but only B translations, repeat (shouldn't happen with correct inputs)
+                 transl = transl.unsqueeze(1).repeat(1, L, 1).reshape(B * L, 3)
     left_hand_mean_pose = (
         torch.tensor(
             LEFT_HAND_MEAN_AA,

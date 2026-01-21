@@ -35,6 +35,15 @@ folder_paths.folder_names_and_paths["hymotion_fbx_templates"] = (
     {".fbx"}
 )
 
+# Register NPZ folder (scans both input and output for convenience)
+folder_paths.folder_names_and_paths["hymotion_npz"] = (
+    [
+        os.path.join(folder_paths.get_output_directory(), "hymotion_npz"),
+        os.path.join(folder_paths.get_input_directory(), "hymotion_npz")
+    ],
+    {".npz"}
+)
+
 # Combine nodes mappings
 NODE_CLASS_MAPPINGS = {**NODE_CLASS_MAPPINGS_MODULAR, **NODE_CLASS_MAPPINGS_2D, **NODE_CLASS_MAPPINGS_3D}
 NODE_DISPLAY_NAME_MAPPINGS = {**NODE_DISPLAY_NAME_MAPPINGS_MODULAR, **NODE_DISPLAY_NAME_MAPPINGS_2D, **NODE_DISPLAY_NAME_MAPPINGS_3D}

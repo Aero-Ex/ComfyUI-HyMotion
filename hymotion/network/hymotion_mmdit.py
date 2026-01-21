@@ -436,6 +436,13 @@ class HunyuanMotionMMDiT(nn.Module):
         timestep_feat = self.timestep_encoder(timesteps)
         vtxt_feat = self.vtxt_encoder(vtxt_input.float())
         adapter = timestep_feat + vtxt_feat
+        
+        # POSE ADAPTER INJECTION: Add pose conditioning if provided
+        # This allows training a Pose-to-Pose adapter without modifying the base architecture
+        pose_cond = kwargs.get("pose_cond", None)
+        if pose_cond is not None:
+            adapter = adapter + pose_cond
+
 
         motion_key_padding_mask = self._canonical_mask(x_mask_temporal).to(device)
         ctxt_key_padding_mask = self._canonical_mask(ctxt_mask_temporal).to(device)

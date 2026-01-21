@@ -1528,10 +1528,13 @@ def extract_animation(scene: FbxScene, skeleton: Skeleton):
     sample(scene.GetRootNode())
 
 def load_fbx(filepath: str, sample_rest_frame: int = None):
+    print(f"[HY-Motion] Loading FBX for retargeting: {filepath}")
     manager = fbx.FbxManager.Create()
     importer = fbx.FbxImporter.Create(manager, "")
     if not importer.Initialize(filepath, -1, manager.GetIOSettings()):
-        return None, None, None
+        error_msg = f"Failed to initialize FBX importer for: {filepath}. Error: {importer.GetStatus().GetErrorString()}"
+        print(f"[HY-Motion] ERROR: {error_msg}")
+        raise RuntimeError(error_msg)
         
     scene = fbx.FbxScene.Create(manager, "")
     importer.Import(scene)
@@ -1639,7 +1642,7 @@ def apply_retargeted_animation(scene, skeleton, ret_rots, ret_locs, fstart, fend
         for i in range(node.GetChildCount()): apply_node(node.GetChild(i))
     apply_node(scene.GetRootNode())
 
-def retarget_animation(src_skel: Skeleton, tgt_skel: Skeleton, mapping: dict[str, str], force_scale: float = 0.0, yaw_offset: float = 0.0, neutral_fingers: bool = True, in_place: bool = False):
+def retarget_animation(src_skel: Skeleton, tgt_skel: Skeleton, mapping: dict[str, str], force_scale: float = 0.0, yaw_offset: float = 0.0, neutral_fingers: bool = True, in_place: bool = False, in_place_x: bool = False, in_place_y: bool = False, in_place_z: bool = False, preserve_position: bool = False):
     print("Retargeting Animation...")
     is_ue5 = mapping.get("__preset__") == "ue5"
     # Remove internal flag from mapping
@@ -1783,44 +1786,40 @@ def retarget_animation(src_skel: Skeleton, tgt_skel: Skeleton, mapping: dict[str
 
     # Realignment Logic (Calculated in Target Space)
     realignment_tgt_q = R.identity()
-    t_up = t_up_axis # Default Up Axis
+    t_up = t_up_axis 
     
-    s_lhip = src_skel.get_bone_case_insensitive('l_hip')
-    s_rhip = src_skel.get_bone_case_insensitive('r_hip')
-    s_pelvis = src_skel.get_bone_case_insensitive('pelvis') or src_skel.get_bone_case_insensitive('hips')
-    
-    t_lhip = tgt_skel.get_bone_case_insensitive('l_hip') or tgt_skel.get_bone_case_insensitive('thigh_l')
-    t_rhip = tgt_skel.get_bone_case_insensitive('r_hip') or tgt_skel.get_bone_case_insensitive('thigh_r')
-    
-    # We need a root bone for displacement reference
+    # NEW: Unified robust search for alignment anchors and root bone
+    t_lhip, t_rhip, t_spine = None, None, None
+    s_lhip, s_rhip, s_spine = None, None, None
     root_bone_name = None
     s_root_bone = None
+    
     for s_bone, t_bone_val, _ in active:
-        # Handle list or single bone
-        if isinstance(t_bone_val, list):
-            t_bone_list = [b for b in t_bone_val if b is not None]
-        else:
-            t_bone_list = [t_bone_val] if t_bone_val is not None else []
-            
-        if not t_bone_list: continue
-        tb_name = t_bone_list[0].name
-        sb_name = s_bone.name
-        if any(x in tb_name.lower() or x in sb_name.lower() for x in ['pelvis', 'hips', 'root', 'center', 'cog']):
-            root_bone_name = tb_name
-            s_root_bone = s_bone
-            break
+        t_bone = t_bone_val[0] if isinstance(t_bone_val, list) else t_bone_val
+        if not t_bone: continue
+        
+        sb_name = s_bone.name.lower()
+        tb_name = t_bone.name.lower()
+        
+        if sb_name == 'l_hip': 
+            s_lhip, t_lhip = s_bone, t_bone
+        elif sb_name == 'r_hip': 
+            s_rhip, t_rhip = s_bone, t_bone
+        elif sb_name in ['spine3', 'spine2', 'spine']:
+            if not s_spine or sb_name == 'spine3' or (sb_name == 'spine2' and s_spine.name.lower() == 'spine'):
+                s_spine, t_spine = s_bone, t_bone
+        
+        if not root_bone_name:
+            if any(x in tb_name or x in sb_name for x in ['pelvis', 'hips', 'root', 'center', 'cog']):
+                root_bone_name = t_bone.name
+                s_root_bone = s_bone
 
     if s_lhip and s_rhip and t_lhip and t_rhip:
-        # Construct Source Frame (Rest Pose)
-        s_spine = src_skel.get_bone_case_insensitive('spine3') or src_skel.get_bone_case_insensitive('spine2') or src_skel.get_bone_case_insensitive('spine')
-        # Use midpoint of hips as the stable base for the vertical vector
+        # Construct Source Frame
         s_mid_hip = (s_lhip.world_matrix[3, :3] + s_rhip.world_matrix[3, :3]) * 0.5
         s_up = (s_spine.world_matrix[3, :3] - s_mid_hip) if s_spine else np.array([0, 1, 0])
-
-        # Side vector is the primary axis for arm leveling
         s_side = s_rhip.world_matrix[3, :3] - s_lhip.world_matrix[3, :3]
         s_fwd = np.cross(s_side, s_up)
-        # Re-calculate Up to be strictly orthogonal to Side and Forward
         s_up = np.cross(s_fwd, s_side) 
         
         s_fwd /= (np.linalg.norm(s_fwd) + 1e-9)
@@ -1828,39 +1827,30 @@ def retarget_animation(src_skel: Skeleton, tgt_skel: Skeleton, mapping: dict[str
         s_side /= (np.linalg.norm(s_side) + 1e-9)
         s_mat = np.stack((s_side, s_up, s_fwd), axis=-1)
         
-        # Construct Target Frame (Rest Pose)
-        t_spine = tgt_skel.get_bone_case_insensitive('spine_05') or tgt_skel.get_bone_case_insensitive('spine_03') or tgt_skel.get_bone_case_insensitive('spine')
+        # Construct Target Frame
         t_mid_hip = (t_lhip.world_matrix[3, :3] + t_rhip.world_matrix[3, :3]) * 0.5
-        
-        t_up = (t_spine.world_matrix[3, :3] - t_mid_hip) if t_spine else t_up_axis
+        t_up_vec = (t_spine.world_matrix[3, :3] - t_mid_hip) if t_spine else t_up_axis
         t_side = t_rhip.world_matrix[3, :3] - t_lhip.world_matrix[3, :3]
-        t_fwd = np.cross(t_side, t_up)
-        t_up = np.cross(t_fwd, t_side) # Orthogonalize
+        t_fwd = np.cross(t_side, t_up_vec)
+        t_up = np.cross(t_fwd, t_side) 
         
         t_fwd /= (np.linalg.norm(t_fwd) + 1e-9)
         t_up /= (np.linalg.norm(t_up) + 1e-9)
         t_side /= (np.linalg.norm(t_side) + 1e-9)
         t_mat = np.stack((t_side, t_up, t_fwd), axis=-1)
         
-        # FIXED Realignment Math:
-        # We need R such that R * (coord_q * S) = T
-        # R = T * S^T * coord_q^T
         real_mat = t_mat @ s_mat.T @ coord_q.as_matrix().T
         realignment_tgt_q = R.from_matrix(real_mat)
-        real_euler = realignment_tgt_q.as_euler('xyz', degrees=True)
-        print(f"[Retarget] Computed Alignment Matrix (Euler XYZ): {real_euler}")
-        print(f"[DEBUG] Source basis (Side, Up, Fwd):\n{s_mat}")
-        print(f"[DEBUG] Target basis (Side, Up, Fwd):\n{t_mat}")
+        print(f"[Retarget] Computed Alignment Matrix (Euler XYZ): {realignment_tgt_q.as_euler('xyz', degrees=True)}")
     else:
         print(f"[Retarget] WARNING: Unable to compute alignment matrix - missing hip/thigh bones")
 
     # Final Global Transformation
     yaw_q = R.from_euler('y' if t_up_axis[1] == 1 else 'z', yaw_offset, degrees=True)
-    # Correct order: Apply coordinate flip, THEN align skeleton basis, THEN apply user yaw
     global_transform_q = yaw_q * realignment_tgt_q * coord_q
     
-    gt_q = global_transform_q.as_quat() # [x, y, z, w]
-    gt_q_np = np.array([gt_q[3], gt_q[0], gt_q[1], gt_q[2]]) # [w, x, y, z]
+    gt_q = global_transform_q.as_quat()
+    gt_q_np = np.array([gt_q[3], gt_q[0], gt_q[1], gt_q[2]]) 
     # 3. Pass 1: Standard Retargeting for all bones
     for s_bone, t_bone_val, _ in active:
         # Filter None bones out of the list (e.g. if neck_03 doesn't exist)
@@ -1974,25 +1964,46 @@ def retarget_animation(src_skel: Skeleton, tgt_skel: Skeleton, mapping: dict[str
             
             # horizontal_offset = -t_pos_0 (masking out the vertical axis)
             h_offset = -t_pos_0.copy()
-            if t_up_axis[1] == 1: h_offset[1] = 0 # Y-Up: Keep Y (vertical)
+            if preserve_position:
+                h_offset[:] = 0.0 # Maintain absolute world position
+                print(f"[Retarget] Preserving absolute world position (no centering offset).")
+            elif t_up_axis[1] == 1: h_offset[1] = 0 # Y-Up: Keep Y (vertical)
             else: h_offset[2] = 0 # Z-Up: Keep Z (vertical)
             
             for f in frames:
                 s_pos_f = s_bone.world_location_animation.get(f, s_rest_pos)
                 t_pos_f = global_transform_q.apply(s_pos_f * scale) + h_offset
                 
-                if in_place:
-                    # Lock horizontal movement to the initial position (frame 0)
-                    if t_up_axis[1] == 1: # Y-Up
-                        t_pos_f[0] = 0.0 # Center X
-                        t_pos_f[2] = 0.0 # Center Z
-                    else: # Z-Up
-                        t_pos_f[0] = 0.0 # Center X
-                        t_pos_f[1] = 0.0 # Center Y
+                # Lock movement based on granular toggles or the legacy in_place flag
+                # Note: These values are in Target Space (t_pos_f)
+                
+                # Determine what needs to be locked
+                lock_x = in_place_x or in_place
+                lock_z = in_place_z or in_place
+                lock_y = in_place_y
+                
+                # STITCHING & COORD DEBUG
+                f_idx = frames.index(f)
+                is_key_frame = (f_idx < 3) or (f_idx > len(frames) - 3)
+                # Check for possible stitch junction (every 90-120 frames usually)
+                if not is_key_frame and (f_idx % 30 == 0):
+                    is_key_frame = True
+                
+                if is_key_frame:
+                    lock_str = f"[{'X' if lock_x else '.'}{'Y' if lock_y else '.'}{'Z' if lock_z else '.'}]"
+                    print(f"[Retarget] COORD DEBUG | Frame {f_idx:04d} (f={f:04d}) | S_POS: {s_pos_f} | T_RAW: {t_pos_f} | LOCKS: {lock_str}")
+
+                if t_up_axis[1] == 1: # Y-Up (e.g. Unity, Unreal default)
+                    if lock_x: t_pos_f[0] = 0.0 # Center X
+                    if lock_z: t_pos_f[2] = 0.0 # Center Z
+                    if lock_y: t_pos_f[1] = 0.0 # Center Y
+                else: # Z-Up (e.g. Blender)
+                    if lock_x: t_pos_f[0] = 0.0 # Center X
+                    if lock_y: t_pos_f[1] = 0.0 # Center Y (Actually horizontal in Z-up)
+                    if lock_z: t_pos_f[2] = 0.0 # Center Z (Actually vertical in Z-up)
                 
                 # Transform to Parent Local Space
                 pname = t_bone_main.parent_name
-                # ... existing logic ...
                 p_world_mat = tgt_skel.node_world_matrices.get(pname, np.eye(4))
                 prot_q = tgt_world_anims.get(pname, {}).get(f)
                 if prot_q is not None:
