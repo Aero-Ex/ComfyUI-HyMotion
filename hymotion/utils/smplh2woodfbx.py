@@ -6,6 +6,7 @@ from typing import Dict, Optional
 
 try:
     import fbx
+    from fbx import *
 except ImportError:
     fbx = None
 
@@ -230,6 +231,7 @@ def _applyAnimationToSkeleton(fbxScene, nodes_map, rot_matrices, translations, f
     animStack = fbx.FbxAnimStack.Create(fbxScene, name)
     animLayer = fbx.FbxAnimLayer.Create(fbxScene, "Base Layer")
     animStack.AddMember(animLayer)
+    fbxScene.SetCurrentAnimationStack(animStack)
 
     # Track if root translation was applied
     root_translation_applied = False
@@ -243,6 +245,16 @@ def _applyAnimationToSkeleton(fbxScene, nodes_map, rot_matrices, translations, f
         initial_trans = root_node_temp.LclTranslation.Get()
         root_initial_translation = np.array([float(initial_trans[0]), float(initial_trans[1]), float(initial_trans[2])])
         print(f"Root initial LclTranslation from template: {root_initial_translation}")
+
+    def _prepare_node(n):
+        if not n: return
+        n.LclRotation.ModifyFlag(fbx.FbxPropertyFlags.EFlags.eAnimatable, True)
+        n.LclTranslation.ModifyFlag(fbx.FbxPropertyFlags.EFlags.eAnimatable, True)
+        # We don't typically animate scale in this pipeline, but we can enable it anyway
+        n.LclScaling.ModifyFlag(fbx.FbxPropertyFlags.EFlags.eAnimatable, True)
+    
+    for node in nodes_map.values():
+        _prepare_node(node)
 
     # Animate each joint
     for smplh_joint_name, smplh_joint_idx in SMPLH_JOINT2NUM.items():
@@ -326,28 +338,48 @@ def _applyAnimationToSkeleton(fbxScene, nodes_map, rot_matrices, translations, f
 
 
 def _saveScene(filename, fbxManager, fbxScene, embed_textures=True):
-    """Save the FBX scene to a file
-
-    Args:
-        filename: Output file path
-        fbxManager: FBX manager instance
-        fbxScene: FBX scene to save
-        embed_textures: Whether to embed textures/media in the FBX file (default True)
-    """
-    # Configure IOSettings to embed textures/media
+    """Save the FBX scene to a file with robust property settings"""
+    
+    # Configure IOSettings
     ios = fbxManager.GetIOSettings()
-    if embed_textures:
-        ios.SetBoolProp(fbx.EXP_FBX_EMBEDDED, True)
-        ios.SetBoolProp(fbx.EXP_FBX_MATERIAL, True)
-        ios.SetBoolProp(fbx.EXP_FBX_TEXTURE, True)
+    if not ios:
+        ios = fbx.FbxIOSettings.Create(fbxManager, fbx.IOSROOT)
+        fbxManager.SetIOSettings(ios)
+
+    # Set export properties for maximum compatibility
+    try:
+        # Standard constants
+        if embed_textures:
+            ios.SetBoolProp(fbx.EXP_FBX_EMBEDDED, True)
+            ios.SetBoolProp(fbx.EXP_FBX_MATERIAL, True)
+            ios.SetBoolProp(fbx.EXP_FBX_TEXTURE, True)
+        ios.SetBoolProp(fbx.EXP_FBX_ANIMATION, True)
+        ios.SetBoolProp(fbx.EXP_FBX_SHAPE, True)
+        ios.SetBoolProp(fbx.EXP_FBX_GOBO, True)
+    except Exception:
+        # Fallback to string-based properties if constants fail
+        try:
+            if embed_textures:
+                ios.SetBoolProp("Export|AdvOptGrp|Fbx|Material", True)
+                ios.SetBoolProp("Export|AdvOptGrp|Fbx|Texture", True)
+                ios.SetBoolProp("Export|AdvOptGrp|Fbx|Embedded", True)
+            ios.SetBoolProp("Export|AdvOptGrp|Fbx|Animation", True)
+            ios.SetBoolProp("Export|AdvOptGrp|Fbx|Shape", True)
+            ios.SetBoolProp("Export|AdvOptGrp|Fbx|Skin", True)
+        except Exception as e:
+            print(f"[HY-Motion] Warning: Could not set FBX export properties: {e}")
 
     exporter = fbx.FbxExporter.Create(fbxManager, "")
-    isInitialized = exporter.Initialize(filename, -1, ios)
-
-    if isInitialized is False:
+    
+    # Use native writer format (usually binary)
+    file_format = fbxManager.GetIOPluginRegistry().GetNativeWriterFormat()
+    
+    if not exporter.Initialize(filename, file_format, ios):
         raise Exception(f"Exporter failed to initialize. Error: {exporter.GetStatus().GetErrorString()}")
 
-    exporter.Export(fbxScene)
+    if not exporter.Export(fbxScene):
+        raise Exception(f"FBX Export failed. Error: {exporter.GetStatus().GetErrorString()}")
+        
     exporter.Destroy()
 
 
@@ -396,6 +428,14 @@ def _convert_smplh_to_woodfbx(
     if isinstance(trans, torch.Tensor):
         trans = trans.numpy()
 
+    # Create FBX manager and load template
+    fbxManager = fbx.FbxManager.Create()
+    ios = fbx.FbxIOSettings.Create(fbxManager, fbx.IOSROOT)
+    fbxManager.SetIOSettings(ios)
+
+    print(f"Loading FBX template: {template_fbx_path}")
+    fbxScene = _loadFbxScene(fbxManager, template_fbx_path)
+
     # Detect scale factor
     unit = fbxScene.GetGlobalSettings().GetSystemUnit()
     unit_factor = unit.GetScaleFactor() # Scale factor to CM
@@ -408,14 +448,6 @@ def _convert_smplh_to_woodfbx(
     # Apply scale to translation
     translations = trans * final_scale
     print(f"[{'SMPLH2WoodFBX'}] Target System Unit: {unit.GetScaleFactor()} (factor), Applying Scale: {final_scale:.4f}")
-
-    # Create FBX manager and load template
-    fbxManager = fbx.FbxManager.Create()
-    ios = fbx.FbxIOSettings.Create(fbxManager, fbx.IOSROOT)
-    fbxManager.SetIOSettings(ios)
-
-    print(f"Loading FBX template: {template_fbx_path}")
-    fbxScene = _loadFbxScene(fbxManager, template_fbx_path)
 
     # Set time mode
     timeMode = fbx.FbxTime().ConvertFrameRateToTimeMode(fps)
@@ -451,7 +483,7 @@ def _convert_smplh_to_woodfbx(
         translations=translations,
         fps=fps,
         smplh_to_fbx_mapping=smplh_to_fbx_mapping,
-        name="SMPLH_Animation",
+        name="Take 001",
         absolute_root=absolute_root,
     )
 
