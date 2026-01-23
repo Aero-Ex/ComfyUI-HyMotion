@@ -20,6 +20,37 @@ console.log("[HY-Motion] app imported successfully:", !!app);
 // Track active viewer instances to manage WebGL context lifecycle
 const activeViewerNodes = new Set();
 
+// Global asset refresh function for all HY-Motion nodes
+const refreshAllHyMotionAssets = async () => {
+    try {
+        console.log("[HY-Motion] Refreshing asset lists for all relevant nodes...");
+        const response = await api.fetchApi("/hymotion/get_assets");
+        if (!response.ok) return;
+        const assets = await response.json();
+
+        if (!app.graph || !app.graph._nodes) return;
+
+        app.graph._nodes.forEach(node => {
+            const nodeName = node.type;
+            if (nodeName === "HYMotionFBXPlayer" || nodeName === "HYMotion3DModelLoader") {
+                const widgetName = nodeName === "HYMotion3DModelLoader" ? "model_path" : "fbx_name";
+                const widget = node.widgets?.find(w => w.name === widgetName);
+
+                if (widget && assets) {
+                    const newList = nodeName === "HYMotion3DModelLoader" ?
+                        assets.fbx_files :
+                        assets.fbx_files.filter(f => f.startsWith("output/")).map(f => f.substring(7));
+
+                    widget.options.values = newList;
+                }
+            }
+        });
+        if (app.graph) app.graph.setDirtyCanvas(true);
+    } catch (e) {
+        console.error("[HY-Motion] Failed to refresh global assets:", e);
+    }
+};
+
 
 app.registerExtension({
     name: "HYMotion.3DViewer",
@@ -31,15 +62,26 @@ app.registerExtension({
         if (nodeData.name !== "HYMotion3DViewer" &&
             nodeData.name !== "HYMotionFBXPlayer" &&
             nodeData.name !== "HYMotion3DModelLoader" &&
-            nodeData.name !== "HYMotionRigManipulator") return;
+            nodeData.name !== "HYMotionRigManipulator" &&
+            nodeData.name !== "HYMotionModularExportFBX" &&
+            nodeData.name !== "HYMotionRetargetFBX") return;
+
+        const isViewerNode = (nodeData.name !== "HYMotionModularExportFBX" && nodeData.name !== "HYMotionRetargetFBX");
 
         const onNodeCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
             const r = onNodeCreated ? onNodeCreated.apply(this, arguments) : undefined;
             const node = this;
-            console.log("[HY-Motion] Creating 3D Viewer Node:", node.id);
+            console.log("[HY-Motion] Creating Node:", nodeData.name, node.id);
 
-            // Track this node instance
+            if (!isViewerNode) {
+                node.onExecuted = function (output) {
+                    if (output && output.timestamp) refreshAllHyMotionAssets();
+                };
+                return r;
+            }
+
+            // Track this node instance as a viewer node
             activeViewerNodes.add(node.id);
 
             // Hide the internal JSON widgets
@@ -50,6 +92,10 @@ app.registerExtension({
                         w.type = "hidden";
                     }
                 });
+                // Initial asset refresh on creation
+                if (nodeData.name === "HYMotionFBXPlayer" || nodeData.name === "HYMotion3DModelLoader") {
+                    refreshAllHyMotionAssets();
+                }
             }, 1);
 
             // Main container with dynamic height
@@ -819,6 +865,7 @@ app.registerExtension({
             let lastMotionsData = null;
             let lastFbxUrl = null;
             let lastModelUrl = null;
+            let lastTimestamp = 0;
             let animationFrameId = null;
             let isPoseMode = false;
             let selectedBone = null;
@@ -2621,7 +2668,11 @@ app.registerExtension({
             };
 
             const loadGenericModel = async (modelPath, format, customName = null, index = 0, total = 1) => {
-                if (!modelPath || modelPath === "none") return;
+                const invalidPaths = ["none", "Export failed", "Error", "undefined", "null", ""];
+                if (!modelPath || invalidPaths.includes(modelPath) || modelPath.includes("Error:") || modelPath.includes("failed")) {
+                    console.log("[HY-Motion] Skipping invalid 3D model path:", modelPath);
+                    return;
+                }
 
                 // Ensure engine is initialized (checks both library and scene)
                 if (!THREE && window.__HY_MOTION_THREE__) THREE = window.__HY_MOTION_THREE__;
@@ -2632,9 +2683,11 @@ app.registerExtension({
 
                 console.log("[HY-Motion] Loading 3D Model Path:", modelPath, `(${index + 1}/${total})`);
 
-                // Optimization: Check if this model is already loaded
-                if (total === 1 && loadedModels.length === 1 && loadedModels[0].modelPath === modelPath) {
-                    console.log("[HY-Motion] Model already loaded, skipping redundant reload.");
+                // Optimization: Check if this model is already loaded (and it's the same execution)
+                if (total === 1 && loadedModels.length === 1 &&
+                    loadedModels[0].modelPath === modelPath &&
+                    loadedModels[0].timestamp === lastTimestamp) {
+                    console.log("[HY-Motion] Model already loaded and up-to-date, skipping redundant reload.");
                     refreshTransforms();
                     return;
                 }
@@ -2687,6 +2740,11 @@ app.registerExtension({
 
                     let fetchUrl = `${window.location.origin}/view?type=${type}&filename=${encodeURIComponent(filename)}`;
                     if (subfolder) fetchUrl += `&subfolder=${encodeURIComponent(subfolder)}`;
+
+                    // Force refresh via timestamp if provided
+                    if (lastTimestamp) {
+                        fetchUrl += `&t=${lastTimestamp}`;
+                    }
 
                     const loadingLabel = customName || filename;
                     statusLabel.innerText = `Loading ${loadingLabel}...`;
@@ -2747,6 +2805,7 @@ app.registerExtension({
                             loadedModels.push({
                                 model: fbx,
                                 modelPath: modelPath,
+                                timestamp: lastTimestamp,
                                 name: customName || filename,
                                 fileName: filename,
                                 subfolder: subfolder,
@@ -2872,8 +2931,27 @@ app.registerExtension({
                 return String(val);
             };
 
+            const ensureFloat = (val) => {
+                if (typeof val === 'number') return val;
+                if (Array.isArray(val)) {
+                    return parseFloat(val[val.length - 1]) || 0;
+                }
+                return parseFloat(val) || 0;
+            };
+
             const handleData = async (data) => {
                 if (!data) return;
+
+                // Sync timestamp for forced reloads
+                const newTimestamp = ensureFloat(data.timestamp);
+                const isNewExecution = newTimestamp && newTimestamp !== lastTimestamp;
+                if (isNewExecution) {
+                    console.log("[HY-Motion] New execution detected, timestamp:", newTimestamp);
+                    lastTimestamp = newTimestamp;
+
+                    // Trigger global asset list refresh for ALL viewer nodes
+                    refreshAllHyMotionAssets();
+                }
 
                 // Lazy init - only load Three.js when we actually have data to display
                 await ensureInitialized();
@@ -2893,7 +2971,7 @@ app.registerExtension({
                 const rawUrl = data.fbx_url || data.fbx_paths;
                 if (rawUrl) {
                     const urlStr = ensureString(rawUrl);
-                    if (urlStr !== lastFbxUrl) {
+                    if (urlStr !== lastFbxUrl || isNewExecution) {
                         lastFbxUrl = urlStr;
                         // Split by newline and load each model (usually just one, but supports multi-batch)
                         const urls = urlStr.split('\n').map(u => u.trim()).filter(u => u.length > 0);
@@ -2906,17 +2984,39 @@ app.registerExtension({
                     }
                 }
 
+                // Support for 'fbx' key containing list of dicts (standard ComfyUI format)
+                if (data.fbx && Array.isArray(data.fbx)) {
+                    data.fbx.forEach((info, i) => {
+                        if (info.filename) {
+                            const type = info.type || "output";
+                            const subfolder = info.subfolder || "";
+                            const modelPath = (type === "output" ? "output/" : "input/") + (subfolder ? subfolder + "/" : "") + info.filename;
+
+                            // Prevent reload if already handling this via rawUrl (to avoid double load)
+                            if (lastFbxUrl.includes(info.filename)) return;
+
+                            console.log("[HY-Motion] Loading FBX from info dict:", modelPath);
+                            loadGenericModel(modelPath, 'fbx', info.filename, i, data.fbx.length);
+                        }
+                    });
+                }
+
                 if (data.model_url) {
                     const url = ensureString(data.model_url);
-                    const format = ensureString(data.format || 'fbx');
-                    startFrame = ensureInt(data.start_frame);
-                    endFrame = ensureInt(data.end_frame);
-                    await loadGenericModel(url, format);
+                    if (url !== lastModelUrl || isNewExecution) {
+                        lastModelUrl = url;
+                        const format = ensureString(data.format || 'fbx');
+                        startFrame = ensureInt(data.start_frame);
+                        endFrame = ensureInt(data.end_frame);
+                        await loadGenericModel(url, format);
+                    }
                 }
 
                 // Also refresh visuals if transform changed via Run
                 throttledRefreshTransforms();
             };
+
+
 
 
             // Lazy initialization - only init when data is actually loaded

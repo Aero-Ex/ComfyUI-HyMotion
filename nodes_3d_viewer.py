@@ -3,6 +3,7 @@ import json
 import torch
 import numpy as np
 import folder_paths
+import time
 from server import PromptServer
 from aiohttp import web
 
@@ -139,6 +140,43 @@ async def export_inplace_fbx(request):
     except Exception as e:
         import traceback
         traceback.print_exc()
+        return web.json_response({"error": str(e)}, status=500)
+
+@PromptServer.instance.routes.get("/hymotion/get_assets")
+async def get_assets(request):
+    """
+    Returns a lists of available FBX files (input/output) and templates.
+    """
+    try:
+        input_dir = folder_paths.get_input_directory()
+        output_dir = folder_paths.get_output_directory()
+        
+        fbx_files = []
+        templates = []
+        extensions = [".fbx", ".glb", ".gltf", ".obj"]
+        
+        def scan_dir(base_path, prefix="", target_list=None):
+            if not os.path.exists(base_path): return
+            if target_list is None: target_list = fbx_files
+            for root, _, filenames in os.walk(base_path):
+                for f in filenames:
+                    if any(f.lower().endswith(ext) for ext in extensions):
+                        rel = os.path.relpath(os.path.join(root, f), base_path).replace("\\", "/")
+                        target_list.append(f"{prefix}{rel}")
+
+        scan_dir(input_dir, "input/")
+        scan_dir(output_dir, "output/")
+        
+        # Also scan templates
+        from .__init__ import CURRENT_DIR
+        template_dir = os.path.join(CURRENT_DIR, "assets", "wooden_models")
+        scan_dir(template_dir, "", templates)
+
+        return web.json_response({
+            "fbx_files": sorted(fbx_files) if fbx_files else ["none"],
+            "templates": sorted(templates) if templates else ["none"]
+        })
+    except Exception as e:
         return web.json_response({"error": str(e)}, status=500)
 
 class HYMotion3DModelLoader:
@@ -359,7 +397,8 @@ class HYMotion3DModelLoader:
                     "translate": [tx, ty, tz],
                     "rotate": [rx, ry, rz],
                     "scale": [sx, sy, sz]
-                }]
+                }],
+                "timestamp": [time.time()]
             }, 
             # HIDDEN: Pose outputs removed
             # "result": (model_path, start_pose, end_pose, motion_data)
@@ -401,9 +440,19 @@ class HYMotionFBXPlayer:
     def play_fbx(self, fbx_name, fbx_path=""):
         selected = fbx_path.strip() if fbx_path and fbx_path.strip() else fbx_name
         if selected == "none": return (None,)
-        # Map to "output/" prefix for consistency with the generic loader's logic
-        full_path = f"output/{selected}".replace("\\", "/") if not selected.startswith("output/") else selected.replace("\\", "/")
-        return {"ui": {"fbx_url": full_path}, "result": (full_path,)}
+        
+        # Handle newline-separated paths (multi-batch)
+        paths = selected.split('\n')
+        prefixed_paths = []
+        for p in paths:
+            p = p.strip()
+            if not p: continue
+            if not p.startswith("output/") and not p.startswith("input/"):
+                p = f"output/{p}"
+            prefixed_paths.append(p.replace("\\", "/"))
+        
+        full_path = "\n".join(prefixed_paths)
+        return {"ui": {"fbx_url": [full_path], "timestamp": [time.time()]}, "result": (full_path,)}
 
 NODE_CLASS_MAPPINGS = {
     "HYMotionFBXPlayer": HYMotionFBXPlayer,

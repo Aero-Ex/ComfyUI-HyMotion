@@ -1566,8 +1566,8 @@ class HYMotionModularExportFBX:
             }
         }
 
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("fbx_paths",)
+    RETURN_TYPES = ("STRING", "FBX")
+    RETURN_NAMES = ("fbx_paths", "fbx")
     FUNCTION = "export_fbx"
     CATEGORY = "HY-Motion/modular"
     OUTPUT_NODE = True
@@ -1663,16 +1663,23 @@ class HYMotionModularExportFBX:
         # Return paths relative to ComfyUI output directory
         relative_paths = [os.path.relpath(p, COMFY_OUTPUT_DIR).replace("\\", "/") for p in fbx_files]
         
-        # Select specific index for preview/output
         if not relative_paths:
-            return ("Export failed",)
+            return {"ui": {"error": ["FBX export failed. Check console for details."], "timestamp": [time.time()]}, "result": ("",)}
             
         result = "\n".join(relative_paths)
         
         if len(relative_paths) > 1:
             print(f"[HY-Motion] Exported {len(relative_paths)} files, returning all paths for multi-view.")
             
-        return {"ui": {"fbx_url": result}, "result": (result,)}
+        fbx_info = []
+        for p in fbx_files:
+            fbx_info.append({
+                "filename": os.path.basename(p),
+                "subfolder": output_dir,
+                "type": "output"
+            })
+            
+        return {"ui": {"fbx": fbx_info, "fbx_url": [result], "timestamp": [time.time()]}, "result": (result, fbx_info)}
 
 
 # ============================================================================
@@ -2014,7 +2021,7 @@ class HYMotionRetargetFBX:
                 "scale": ("FLOAT", {
                     "default": 0.0, 
                     "min": 0.0, 
-                    "max": 10.0, 
+                    "max": 100.0, 
                     "step": 0.01,
                     "tooltip": "Force specific scale multiplier. Leave at 0.0 for automatic height-based scaling (recommended)."
                 }),
@@ -2064,19 +2071,19 @@ class HYMotionRetargetFBX:
         resolved_path = None
         
         if os.path.isabs(target_fbx):
-            if os.path.exists(target_fbx):
+            if os.path.isfile(target_fbx):
                 resolved_path = target_fbx
         else:
             # Handle common prefixes
             if target_fbx.startswith("input/"):
                 rel_path = target_fbx[6:]
                 potential_path = os.path.join(folder_paths.get_input_directory(), rel_path)
-                if os.path.exists(potential_path):
+                if os.path.isfile(potential_path):
                     resolved_path = potential_path
             elif target_fbx.startswith("output/"):
                 rel_path = target_fbx[7:]
                 potential_path = os.path.join(folder_paths.get_output_directory(), rel_path)
-                if os.path.exists(potential_path):
+                if os.path.isfile(potential_path):
                     resolved_path = potential_path
             
             # Fallback: Search in input and output directories
@@ -2086,7 +2093,7 @@ class HYMotionRetargetFBX:
                 
                 for base_dir in [input_dir, output_dir_comfy]:
                     potential_path = os.path.join(base_dir, target_fbx)
-                    if os.path.exists(potential_path):
+                    if os.path.isfile(potential_path):
                         resolved_path = potential_path
                         break
         
@@ -2194,7 +2201,7 @@ class HYMotionRetargetFBX:
                 "type": "output"
             })
             
-        return {"ui": {"fbx": fbx_info}, "result": (result, fbx_info)}
+        return {"ui": {"fbx": fbx_info, "fbx_url": [result], "timestamp": [time.time()]}, "result": (result, fbx_info)}
 
 
 class HYMotionSMPLToData:
