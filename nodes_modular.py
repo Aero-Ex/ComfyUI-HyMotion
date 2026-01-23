@@ -2,6 +2,7 @@ import os
 import sys
 import yaml
 import torch
+import torch.nn.functional as F
 import numpy as np
 import time
 import uuid
@@ -340,6 +341,10 @@ class HYMotionDiTLoader:
             special_game_ctxt_feat=special_game_ctxt_feat.to(target_device),
             train_frames=train_frames
         )
+        
+        if dit_wrapper.mean is not None:
+            print(f"[HY-Motion] STATS DEBUG (Checkpoint Mean): {dit_wrapper.mean.flatten()[:3].cpu().numpy()}")
+            print(f"[HY-Motion] STATS DEBUG (Checkpoint Std):  {dit_wrapper.std.flatten()[:3].cpu().numpy()}")
         
         print(f"[HY-Motion] DiT loaded on {target_device}")
         
@@ -719,6 +724,7 @@ class HYMotionSampler:
                 "motion_data": ("HYMOTION_DATA", {"tooltip": "Optional previous motion to chain from. Automatically uses the last frame as the start."}),
                 "first_frame": ("HYMOTION_FRAME", {"tooltip": "Optional starting pose for the motion"}),
                 # "last_frame": ("HYMOTION_FRAME", {"tooltip": "Optional ending pose for the motion"}),  # HIDDEN: Feature in development
+                "latent": ("LATENT", {"tooltip": "Optional latent tensor to guide generation or for refinement (used with denoise < 1.0)"}),
                 "denoise": ("FLOAT", {
                     "default": 1.0, 
                     "min": 0.0, 
@@ -751,6 +757,13 @@ class HYMotionSampler:
                     "default": False,
                     "tooltip": "Force the animation to start at (0,0) in the XZ plane, ignoring the world position of the input frame."
                 }),
+                "momentum_guidance_scale": ("FLOAT", {
+                    "default": 0.7,
+                    "min": 0.0,
+                    "max": 5.0,
+                    "step": 0.1,
+                    "tooltip": "Strength of momentum injection (0.7 = 70% physics, 30% AI). Lower allowed more AI variation at the start."
+                }),
             }
         }
     
@@ -769,10 +782,12 @@ class HYMotionSampler:
                skip_smoothing: bool = False, body_chunk_size: int = 64,
                first_frame: Optional[HYMotionFrame] = None, 
                last_frame: Optional[HYMotionFrame] = None,
+               latent: Optional[torch.Tensor] = None,
                denoise: float = 1.0, transition_frames: int = 5,
                smoothing_sigma: float = 1.0, smoothing_window: int = 11,
                motion_data: Optional[Dict[str, Any]] = None,
-               force_origin: bool = False):
+               force_origin: bool = False,
+               momentum_guidance_scale: float = 0.7):
         
         def safe_float(v, default):
             try:
@@ -789,6 +804,7 @@ class HYMotionSampler:
         denoise = safe_float(denoise, 1.0)
         transition_frames = int(transition_frames)
         smoothing_sigma = safe_float(smoothing_sigma, 1.0)
+        momentum_guidance_scale = safe_float(momentum_guidance_scale, 0.7)
         smoothing_window = int(smoothing_window)
         if smoothing_window % 2 == 0: smoothing_window += 1 # Must be odd
 
@@ -802,13 +818,19 @@ class HYMotionSampler:
         num_frames = int(duration * 30)
         
         # Use train_frames for latent generation (official implementation)
-        # Then crop to actual num_frames after sampling
-        train_frames = dit_model.train_frames
+        # We now allow extending this up to 1000 frames (RoPE supports up to 5000)
+        # but warn if exceeding the typical training range (360 frames).
+        train_frames_default = dit_model.train_frames
+        train_frames = max(num_frames, train_frames_default)
         
-        # Clamp num_frames to valid range
-        if num_frames > train_frames:
-            print(f"[HY-Motion] Warning: Requested {num_frames} frames exceeds train_frames {train_frames}, clamping")
-            num_frames = train_frames
+        if num_frames > train_frames_default:
+            print(f"[HY-Motion] Extending sampling window to {num_frames} frames (Caution: durations > 12s may slightly reduce coherence).")
+        
+        # Upper safety limit for single-pass VRAM/Stability
+        if train_frames > 1000: 
+            print(f"[HY-Motion] Duration too long for single pass (max 33s). Clamping to 1000 frames. Use Chaining for longer motions.")
+            train_frames = 1000
+            num_frames = min(num_frames, 1000)
         num_frames = max(num_frames, 20)  # Minimum 20 frames
         
         vtxt = text_embeds.vtxt.clone().to(dit_model.device)
@@ -990,6 +1012,21 @@ class HYMotionSampler:
                 # x_t = (1-t)x_0 + t*x_1
                 y0 = (1.0 - t_start) * y0 + t_start * x_1_interp
                 print(f"[HY-Motion] Denoise enabled: starting ODE at t={t_start:.4f} with First->Last interpolation")
+            elif latent is not None:
+                # Direct latent injection (e.g. from Encoder or Refinement)
+                # latent shape: [B, T, 201]
+                # We need to resize it to match train_frames if needed
+                l_in = latent.clone().to(dit_model.device)
+                if l_in.shape[1] != train_frames:
+                     # Simple nearest resize for now if lengths mismatch
+                     l_in = F.interpolate(l_in.transpose(1, 2), size=train_frames, mode='nearest').transpose(1, 2)
+                     print(f"[HY-Motion] Warning: Resized input latent from {latent.shape[1]} to {train_frames} frames")
+                
+                # Check for normalization stats mismatch
+                # Assumes input latent is already normalized (which it is, from Encoder node)
+                
+                y0 = (1.0 - t_start) * y0 + t_start * l_in
+                print(f"[HY-Motion] Denoise enabled: starting ODE at t={t_start:.4f} using provided LATENT")
             elif first_latent is not None:
                 y0 = (1.0 - t_start) * y0 + t_start * first_latent.unsqueeze(1)
                 print(f"[HY-Motion] Denoise enabled: starting ODE at t={t_start:.4f} using first_frame as base")
@@ -1076,39 +1113,108 @@ class HYMotionSampler:
             # We override/guide the predicted velocity for the first/last 'transition_frames'
             # to ensure a smooth takeoff/landing from the input frames.
             if first_latent is not None or last_latent is not None:
-                # w: [1, train_frames, 1]
-                w = torch.zeros((1, x_pred.shape[1], 1), device=x.device)
+                # w: [1, train_frames, D] - Channel-specific guidance
+                w = torch.zeros((1, x_pred.shape[1], x_pred.shape[2]), device=x.device)
+                
+                # Calculate temporal weights (S curve or Linear)
+                # We apply high guidance at the boundary, fading to 0
                 
                 if first_latent is not None:
-                    # Start guidance
+                    # Start boundary
                     w[:, 0, :] = 1.0
                     if transition_frames > 0:
                         for i in range(1, transition_frames + 1):
                             if i < x_pred.shape[1]:
-                                w[:, i, :] = max(w[:, i, :].item(), 1.0 - (i / (transition_frames + 1)))
+                                weight = max(0.0, 1.0 - (i / (transition_frames + 1)))
+                                w[:, i, :] = weight
                 
                 if last_latent is not None:
-                    # End guidance
+                    # End boundary
                     w[:, num_frames - 1, :] = 1.0
                     if transition_frames > 0:
                         for i in range(1, transition_frames + 1):
                             idx = num_frames - 1 - i
                             if idx >= 0:
-                                w[:, idx, :] = max(w[:, idx, :].item(), 1.0 - (i / (transition_frames + 1)))
+                                weight = max(0.0, 1.0 - (i / (transition_frames + 1)))
+                                w[:, idx, :] = weight
+                # Unified Target Construction
+                # We determine the 'target_data' (x_start) that we want the flow to point towards.
+                target_data = None
                 
-                # Target velocity to reach conditioned frames at t=1
-                # Formula: v = target - noise_at_t0
-                # Note: We use the interpolated/repeated base for target velocity
                 if first_latent is not None and last_latent is not None:
-                    t_interp = torch.linspace(0, 1, train_frames, device=x.device).view(1, -1, 1)
-                    v_target = ((1.0 - t_interp) * first_latent.unsqueeze(1) + t_interp * last_latent.unsqueeze(1)) - y0
+                    # Interpolation between Start and End
+                    t_interp = torch.linspace(0, 1, x_pred.shape[1], device=x.device).view(1, -1, 1)
+                    target_data = (1.0 - t_interp) * first_latent.unsqueeze(1) + t_interp * last_latent.unsqueeze(1)
                 elif first_latent is not None:
-                    v_target = first_latent.unsqueeze(1) - y0
+                    # Start condition only
+                    target_data = first_latent.unsqueeze(1).repeat(1, x_pred.shape[1], 1)
+                elif last_latent is not None:
+                    # End condition only
+                    target_data = last_latent.unsqueeze(1).repeat(1, x_pred.shape[1], 1)
+
+                # MOMENTUM INJECTION (Modifies target_data)
+                is_momentum = False
+                if latent is not None and latent.shape[1] > 1 and first_latent is not None:
+                    is_momentum = True
+                    # Calculate velocity from history
+                    p_last = latent[:, -1:, :].to(x.device)
+                    p_prev = latent[:, -2:-1, :].to(x.device)
+                    v_history = p_last - p_prev # Shape [1, 1, 201]
+
+                    # Apply momentum extrapolation to Root Translation (dims 0-3)
+                    # We linearize the target for the transition duration
+                    if target_data is not None:
+                        for i in range(min(transition_frames, x_pred.shape[1])):
+                             # Linear extrapolation delta
+                             delta = v_history[:, :, :3] * (i + 1)
+                             target_data[:, i, :3] = target_data[:, i, :3] + delta
+                    
+                    if step_counter[0] == 0:
+                         print(f"[HY-Motion] 🚀 Momentum Injection Active! Guiding Root Translation along extrapolated path.")
+
+                # Calculate specific target velocity for Flow Matching
+                v_target = None
+                if target_data is not None:
+                    v_target = target_data - y0
+                
+                # Guidance Channel Masking ('w') adjustments
+                if is_momentum:
+                    # If using momentum, we trust the extrapolated translation target,
+                    # BUT we might want to dampen it to allow the AI to add "life" (noise).
+                    # w[..., :3] roughly controls translation adherence.
+                    # We scale the entire w vector (rot + trans) by the user's factor.
+                    w = w * momentum_guidance_scale
                 else:
-                    v_target = last_latent.unsqueeze(1) - y0
+                    # If NO momentum (and only first_latent), we perform "Translation Agostic" guidance.
+                    # We zero out translation weights to let the model infer physics.
+                    # (Unless we are in In-Between mode, where translation is interpolated)
+                    if first_latent is not None and last_latent is None:
+                         w[..., :3] = 0.0
+
+                # DEBUG: Log the Conflict (Difference between Native Prediction and Guidance)
+                if step_counter[0] < 5: # Only log first 5 steps
+                    # Only look at the transition frames where we apply guidance
+                    mask_active = w > 0.01
+                    if mask_active.any() and v_target is not None:
+                        native_pred = x_pred
+                        conflict = torch.abs(native_pred - v_target)
+                        
+                        rot_conflict = 0.0
+                        if mask_active[..., 3:135].any():
+                            rot_conflict = conflict[..., 3:135][mask_active[..., 3:135]].mean().item()
+                            
+                        trans_conflict = 0.0
+                        if mask_active[..., :3].any():
+                            trans_conflict = conflict[..., :3][mask_active[..., :3]].mean().item()
+                        
+                        origin = "MOMENTUM" if is_momentum else "POSE-DIFF"
+                        print(f"[HY-Motion] Step {step_counter[0]} GUIDANCE DELTA ({origin}): Rot={rot_conflict:.4f}, Trans={trans_conflict:.4f}")
+                        if rot_conflict > 1.5:
+                             print(f"[HY-Motion] ℹ Strong guidance applied (Enforcing continuity over immediate prompt adherence).")
                 
                 # Blend predicted velocity with target velocity
-                x_pred = (1.0 - w) * x_pred + w * v_target
+                if v_target is not None:
+                    x_pred = (1.0 - w) * x_pred + w * v_target
             
             if torch.isnan(x_pred).any():
                 print(f"[HY-Motion] ERROR: DiT forward produced NaNs at t={t.item()}!")
@@ -1141,20 +1247,31 @@ class HYMotionSampler:
         latent_output = trajectory[-1][:, :num_frames, ...].clone()
         
         # Denormalize using mean/std (matching official implementation)
+        # Denormalize using mean/std (matching official implementation)
         if dit_model.mean is not None and dit_model.std is not None:
+            # Handle 52-joint stats (315 dims) vs 22-joint latent (201 dims) mismatch
+            # This mirrors the logic in encoder.py to ensure robust decoding
+            m = dit_model.mean.clone()
+            s = dit_model.std.clone()
+            
+            if m.shape[-1] > 201:
+                print(f"[HY-Motion] Adapting 52-joint stats ({m.shape[-1]} dims) to 22-joint latent (201 dims)")
+                m = torch.cat([m[..., :3], m[..., 3:135], m[..., 159:225]], dim=-1)
+                s = torch.cat([s[..., :3], s[..., 3:135], s[..., 159:225]], dim=-1)
+
             # Log denormalization stats first time
-            print(f"[HY-Motion] Denormalizing with mean shape {dit_model.mean.shape}, std shape {dit_model.std.shape}")
+            print(f"[HY-Motion] Denormalizing with mean shape {m.shape}, std shape {s.shape}")
             
             # Handle zero std - CRITICAL: Use zeros (not ones!) for near-zero std
             # This means for dimensions with std < 1e-3: latent_denorm = mean (ignore latent)
             # This matches official behavior in _decode_o6dp
-            std = dit_model.std.clone()
-            std_zero = std < 1e-3
+            std_zero = s < 1e-3
             num_zero_std = std_zero.sum().item()
             if num_zero_std > 0:
-                print(f"[HY-Motion] {num_zero_std}/{std.numel()} dimensions have near-zero std")
-            std = torch.where(std_zero, torch.zeros_like(std), std)  # FIX: zeros not ones!
-            latent_denorm = latent_output * std + dit_model.mean
+                print(f"[HY-Motion] {num_zero_std}/{s.numel()} dimensions have near-zero std")
+            s = torch.where(std_zero, torch.zeros_like(s), s)  # FIX: zeros not ones!
+            
+            latent_denorm = latent_output * s + m
             
             # Log output range for debugging
             print(f"[HY-Motion] Denorm output range: [{latent_denorm.min():.4f}, {latent_denorm.max():.4f}]")
@@ -1335,10 +1452,22 @@ class HYMotionSampler:
         rot_mat = rot6d_to_rotation_matrix(rot6d_smooth.reshape(-1, 6)).reshape(B, L, num_joints, 3, 3)
         
         # Prepare values for output_dict
-        # If force_origin is enabled, we don't add the root_offset back here, it's handled later.
-        # Otherwise, add root_offset to transl_cpu for concatenation.
-        final_offset = torch.zeros_like(root_offset) if force_origin else root_offset
-        transl_cpu = (transl_smooth + final_offset.to(transl_smooth)).cpu()
+        # Final translation calculation:
+        # We align the entire sequence so it starts EXACTLY at the world_target height/pos.
+        # This prevents both "double-offsetting" and "ground-jumping".
+        # CRITICAL: Use original first_frame.transl (not root_offset) to preserve Y-coordinate!
+        if first_frame is not None and not force_origin:
+            final_offset = first_frame.transl.to(transl_smooth).clone()
+        elif force_origin:
+            final_offset = torch.zeros_like(root_offset).to(transl_smooth)
+        else:
+            final_offset = root_offset.to(transl_smooth).clone()
+            
+        # Bit-perfect shift: move entire sequence so frame 0 matches final_offset exactly
+        displacement = final_offset - transl_smooth[:, 0:1, :]
+        transl_cpu = (transl_smooth + displacement).cpu()
+        print(f"[HY-Motion] FINAL ALIGNMENT: Bit-perfect shift to anchor.")
+        
         rot6d_cpu = rot6d_smooth.cpu()
         root_rot_mat = rot_mat[:, :, 0].cpu() # (B, L, 3, 3)
         
