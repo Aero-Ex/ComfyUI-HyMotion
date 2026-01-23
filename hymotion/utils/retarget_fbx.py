@@ -158,6 +158,7 @@ class Skeleton:
         self.frame_start = 0
         self.frame_end = 0
         self.bone_children: dict[str, list[str]] = {} # bone_name -> list of child bone names
+        self.unit_scale = 1.0 # Multiplier to convert internal units to Centimeters (1.0 for CM, 100.0 for M)
 
     def add_bone(self, bone: BoneData):
         self.bones[bone.name.lower()] = bone
@@ -306,6 +307,7 @@ def load_npz(data_or_path: str | dict) -> Skeleton:
     skel.frame_start = 0
     skel.frame_end = T - 1
     skel.fps = 30.0
+    skel.unit_scale = 100.0 # HyMotion/SMPL-H is ALWAYS in Meters
     
     # Reconstruct World Rotations via Forward Kinematics
     world_rots = np.zeros((T, 52, 3, 3))
@@ -904,12 +906,15 @@ def get_skeleton_height(skeleton: Skeleton) -> float:
         
         # Add leg length (approximate from Pelvis to Foot)
         l_hip = find_bone(['l_hip', 'leftupleg', 'mixamorig:leftupleg', 'L_Hip'])
-        l_foot = find_bone(['l_ankle', 'leftfoot', 'mixamorig:leftfoot', 'L_Ankle'])
+        # Search for foot first, then ankle
+        l_foot = find_bone(['lefttoe', 'l_foot', 'leftfoot', 'L_Foot', 'l_ankle', 'L_Ankle'])
         
         if l_hip and l_foot:
             leg_len = 0.0
             curr = l_foot
-            while curr and curr != l_hip and curr.name not in visited:
+            # Traverse from foot up to PELVIS, not just hip, to catch the hip-to-pelvis distance
+            # This ensures we get the full vertical height even if the structure is non-standard
+            while curr and curr.name.lower() not in [p.lower() for p in pelvis_names] and curr.name not in visited:
                 visited.add(curr.name)
                 pname = curr.parent_name
                 if not pname: break
@@ -917,8 +922,10 @@ def get_skeleton_height(skeleton: Skeleton) -> float:
                 if not parent: break
                 leg_len += np.linalg.norm(curr.head - parent.head)
                 curr = parent
+            
             total_len += leg_len
         else:
+            # approximated fallback
             total_len *= 2.0
             
         if total_len > 0.1:
@@ -1232,7 +1239,6 @@ def load_bone_mapping(filepath: str, src_skel: Skeleton, tgt_skel: Skeleton) -> 
                     mapped_sources.add(best_sc.name.lower())
                     match_count += 1
                     queue.append((best_sc, tc))
-                    print(f"[DEBUG] Structural Match: {best_sc.name} -> {tc.name} (score: {best_score:.3f})")
 
         print(f"[Retarget] Structural BFS Matching complete. Total matches: {match_count}")
 
@@ -1425,7 +1431,6 @@ def load_bone_mapping(filepath: str, src_skel: Skeleton, tgt_skel: Skeleton) -> 
                     mapped_targets.add(best_tgt.name)
                     mapped_sources.add(src_bone.name.lower())
                     match_count += 1
-                    print(f"[DEBUG] Arm Fallback Match: {src_bone.name} -> {best_tgt.name} (score: {best_score:.3f})")
 
     print(f"[Retarget] Final load_bone_mapping: Found {match_count} total matches.")
     return mapping
@@ -1554,6 +1559,9 @@ def load_fbx(filepath: str, sample_rest_frame: int = None):
     skel = Skeleton(os.path.basename(filepath))
     collect_skeleton_nodes(scene.GetRootNode(), skel, sampling_time=FbxTime(0) if sample_rest_frame is not None else None, bind_pose_map=bind_pose_map)
     
+    unit = scene.GetGlobalSettings().GetSystemUnit()
+    skel.unit_scale = unit.GetScaleFactor()
+    
     # Refresh frame range if needed
     return manager, scene, skel
 
@@ -1566,7 +1574,6 @@ def apply_retargeted_animation(scene, skeleton, ret_rots, ret_locs, fstart, fend
         
     tmode = scene.GetGlobalSettings().GetTimeMode()
     unit = scene.GetGlobalSettings().GetSystemUnit()
-    print(f"[DEBUG] FBX TimeMode: {tmode}, SystemUnit ScaleFactor: {unit.GetScaleFactor()}")
     
     # Clear old stacks
     for i in range(scene.GetSrcObjectCount(fbx.FbxCriteria.ObjectType(FbxAnimStack.ClassId)) - 1, -1, -1):
@@ -1644,6 +1651,7 @@ def apply_retargeted_animation(scene, skeleton, ret_rots, ret_locs, fstart, fend
 
 def retarget_animation(src_skel: Skeleton, tgt_skel: Skeleton, mapping: dict[str, str], force_scale: float = 0.0, yaw_offset: float = 0.0, neutral_fingers: bool = True, in_place: bool = False, in_place_x: bool = False, in_place_y: bool = False, in_place_z: bool = False, preserve_position: bool = False):
     print("Retargeting Animation...")
+
     is_ue5 = mapping.get("__preset__") == "ue5"
     # Remove internal flag from mapping
     mapping = {k: v for k, v in mapping.items() if k != "__preset__"}
@@ -1749,9 +1757,8 @@ def retarget_animation(src_skel: Skeleton, tgt_skel: Skeleton, mapping: dict[str
     if fuzzy_matches:
         print(f"  Fuzzy matched: {len(fuzzy_matches)} bones")
         for s_name, t_name, conf in fuzzy_matches:
-            print(f"    {s_name} → {t_name} (confidence: {conf:.2f})")
+            print(f"    {s_name} -> {t_name} (confidence: {conf:.2f})")
             
-    print(f"DEBUG: Final Mapping Count: {len(active)} bones")
     # Sort for cleaner debug output
     final_mappings = sorted(active, key=lambda x: x[1].name)
     for s, t, _ in final_mappings:
@@ -1759,9 +1766,32 @@ def retarget_animation(src_skel: Skeleton, tgt_skel: Skeleton, mapping: dict[str
             
     src_h = get_skeleton_height(src_skel)
     tgt_h = get_skeleton_height(tgt_skel)
-    print(f"[DEBUG] Skeleton Heights - Source: {src_h:.4f}, Target: {tgt_h:.4f}")
-    scale = force_scale if force_scale > 1e-4 else (tgt_h / src_h if src_h > 0.01 else 1.0)
-    print(f"Scale: {scale:.4f}")
+    
+    # Anatomical Scale: Normalized to Centimeters for unit-agnostic comparison
+    src_h_cm = src_h * src_skel.unit_scale
+    tgt_h_cm = tgt_h * tgt_skel.unit_scale
+    
+    # The anatomical scale is the actual size ratio between the two characters
+    anatomical_scale = tgt_h_cm / src_h_cm if src_h_cm > 0.01 else 1.0
+    
+    # Final numeric scale to apply to raw source coordinates to get target units
+    # Logic: TargetUnits = (SourceUnits * SourceScaleToCM) * AnatomicalScale / TargetScaleFromCM
+    # DRIFT FIX: When Auto-Scale (force_scale=0) is used, we enforce Absolute Motion Matching.
+    # We IGNORE anatomical scale for translation to ensure 1:1 physics (if source moves 1m, target moves 1m).
+    # This prevents "drifting" where a smaller character covers less distance than the source over time.
+    if force_scale > 1e-4:
+        scale = force_scale
+        print(f"[INFO] Using Forced Scale: {scale:.4f}")
+    else:
+        # Absolute Scaling: Just convert units (M -> CM usually)
+        # s_skel.unit_scale is usually 100 (M to CM)
+        # t_skel.unit_scale is usually 1.0 (CM to CM) or 100 (M to CM)
+        # Result: 100/1 = 100.0 (Scale meters to cm). 100/100 = 1.0 (Meters to Meters).
+        scale = src_skel.unit_scale / tgt_skel.unit_scale
+        print(f"[INFO] Auto-Scale (Absolute): {scale:.4f} (Anatomical Ratio {anatomical_scale:.4f} ignored for physics)")
+    
+    print(f"[INFO] Height Check - Source: {src_h_cm:.2f}cm, Target: {tgt_h_cm:.2f}cm")
+    print(f"[INFO] Final Retargeting Scale: {scale:.4f}")
     
     tgt_world_anims = {}
     frames = sorted(list(src_skel.bones.values())[0].world_animation.keys()) if src_skel.bones else []
@@ -1775,7 +1805,6 @@ def retarget_animation(src_skel: Skeleton, tgt_skel: Skeleton, mapping: dict[str
     if t_head:
         if abs(t_head.head[2]) > abs(t_head.head[1]):
             t_up_axis = np.array([0, 0, 1])
-            print("[DEBUG] Detected Target Up Axis: Z-Up")
 
     # Coordinate Transform: Map Source Up ([0,1,0]) to Target Up
     if t_up_axis[2] == 1: # Z-Up (Blender)
@@ -1956,23 +1985,66 @@ def retarget_animation(src_skel: Skeleton, tgt_skel: Skeleton, mapping: dict[str
         
         if t_bone_main.name == root_bone_name:
             ret_locs[t_bone_main.name] = {}
-            s_rest_pos = s_bone.world_matrix[3, :3]
             
-            # Calculate Horizontal Offset at Frame 0 to center at origin
+            # GROUNDING FIX: Calculate floor levels for proper vertical alignment
+            # Source floor: Y=0 (SMPL-H/HyMotion convention)
+            s_floor = 0.0
+            
+            # Target floor: Minimum foot Y coordinate (handles rigs centered at hips)
+            t_floor = 0.0
+            t_lfoot = tgt_skel.get_bone_case_insensitive('leftfoot') or tgt_skel.get_bone_case_insensitive('l_foot')
+            t_rfoot = tgt_skel.get_bone_case_insensitive('rightfoot') or tgt_skel.get_bone_case_insensitive('r_foot')
+            if t_lfoot or t_rfoot:
+                foot_ys = []
+                if t_lfoot: foot_ys.append(t_lfoot.head[1])
+                if t_rfoot: foot_ys.append(t_rfoot.head[1])
+                t_floor = min(foot_ys) if foot_ys else 0.0
+                print(f"[Retarget] Ground Level Detection: Target floor at Y={t_floor:.2f}")
+            
+            # Where the hips START in the source animation (Scaled and Transformed)
+            s_rest_pos = s_bone.world_matrix[3, :3]
             s_pos_0 = s_bone.world_location_animation.get(frames[0], s_rest_pos)
             t_pos_0 = global_transform_q.apply(s_pos_0 * scale)
             
-            # horizontal_offset = -t_pos_0 (masking out the vertical axis)
-            h_offset = -t_pos_0.copy()
+            # AXIS-AWARE GROUNDING:
+            h_offset = np.zeros(3)
+            ground_offset = np.zeros(3)
+            
+            if t_up_axis[1] == 1: # Y-Up (Unity, Unreal)
+                # Ground is X/Z plane, Up is Y
+                ground_offset = np.array([0.0, t_floor - (s_floor * scale), 0.0])
+                # Center X and Z (horizontal)
+                h_offset = np.array([-t_pos_0[0], 0.0, -t_pos_0[2]])
+                print(f"[Retarget] Axis System: Y-Up. Applying grounding to Y, centering X/Z.")
+            
+            else: # Z-Up (Blender, 3ds Max)
+                # Ground is X/Y plane, Up is Z
+                # Note: t_floor detection above might need adjustment for Z-Up if not handled
+                s_floor_z = 0.0 # Hypothetical Z-floor for source
+                
+                # Re-detect floor on Z axis for target if needed
+                if t_lfoot or t_rfoot:
+                     foot_zs = []
+                     if t_lfoot: foot_zs.append(t_lfoot.head[2])
+                     if t_rfoot: foot_zs.append(t_rfoot.head[2])
+                     t_floor = min(foot_zs) if foot_zs else 0.0
+                
+                ground_offset = np.array([0.0, 0.0, t_floor - (s_floor_z * scale)])
+                # Center X and Y (horizontal in Z-up)
+                h_offset = np.array([-t_pos_0[0], -t_pos_0[1], 0.0])
+                print(f"[Retarget] Axis System: Z-Up. Applying grounding to Z, centering X/Y.")
+            
+            anchor_offset = ground_offset + h_offset
+            
             if preserve_position:
-                h_offset[:] = 0.0 # Maintain absolute world position
-                print(f"[Retarget] Preserving absolute world position (no centering offset).")
-            elif t_up_axis[1] == 1: h_offset[1] = 0 # Y-Up: Keep Y (vertical)
-            else: h_offset[2] = 0 # Z-Up: Keep Z (vertical)
+                anchor_offset[:] = 0.0
+                print(f"[Retarget] Preserving absolute world position (using sampler coordinates).")
+            else:
+                print(f"[Retarget] Grounded root: Floor offset={ground_offset[1]:.2f}, Horizontal centering applied.")
             
             for f in frames:
                 s_pos_f = s_bone.world_location_animation.get(f, s_rest_pos)
-                t_pos_f = global_transform_q.apply(s_pos_f * scale) + h_offset
+                t_pos_f = global_transform_q.apply(s_pos_f * scale) + anchor_offset
                 
                 # Lock movement based on granular toggles or the legacy in_place flag
                 # Note: These values are in Target Space (t_pos_f)
@@ -1991,16 +2063,15 @@ def retarget_animation(src_skel: Skeleton, tgt_skel: Skeleton, mapping: dict[str
                 
                 if is_key_frame:
                     lock_str = f"[{'X' if lock_x else '.'}{'Y' if lock_y else '.'}{'Z' if lock_z else '.'}]"
-                    print(f"[Retarget] COORD DEBUG | Frame {f_idx:04d} (f={f:04d}) | S_POS: {s_pos_f} | T_RAW: {t_pos_f} | LOCKS: {lock_str}")
 
                 if t_up_axis[1] == 1: # Y-Up (e.g. Unity, Unreal default)
-                    if lock_x: t_pos_f[0] = 0.0 # Center X
-                    if lock_z: t_pos_f[2] = 0.0 # Center Z
-                    if lock_y: t_pos_f[1] = 0.0 # Center Y
+                    if lock_x: t_pos_f[0] = t_rest_pos[0]
+                    if lock_z: t_pos_f[2] = t_rest_pos[2]
+                    if lock_y: t_pos_f[1] = t_rest_pos[1]
                 else: # Z-Up (e.g. Blender)
-                    if lock_x: t_pos_f[0] = 0.0 # Center X
-                    if lock_y: t_pos_f[1] = 0.0 # Center Y (Actually horizontal in Z-up)
-                    if lock_z: t_pos_f[2] = 0.0 # Center Z (Actually vertical in Z-up)
+                    if lock_z: t_pos_f[2] = t_rest_pos[2] # Vertical in Z-Up
+                    if lock_x: t_pos_f[0] = t_rest_pos[0]
+                    if lock_y: t_pos_f[1] = t_rest_pos[1] # Horizontal in Z-Up
                 
                 # Transform to Parent Local Space
                 pname = t_bone_main.parent_name
@@ -2174,7 +2245,6 @@ def main():
         src_h = get_skeleton_height(src_skel)
         # FALLBACK: If Bind Pose is collapsed (height ~0), try frame 0
         if src_h < 0.1:
-            print("DEBUG: Bind Pose collapsed, falling back to frame 0 for rest pose.")
             src_man, src_scene, _ = load_fbx(args.source, sample_rest_frame=0)
             # Refresh skeleton with sampled data
             src_skel = Skeleton(os.path.basename(args.source))

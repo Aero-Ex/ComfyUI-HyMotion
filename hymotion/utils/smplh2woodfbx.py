@@ -356,7 +356,7 @@ def _convert_smplh_to_woodfbx(
     npz_data,
     save_fn,
     fps=30,
-    scale=100,
+    scale=0.0,
     smplh_to_fbx_mapping=None,
     clear_animations=True,
     absolute_root=False,
@@ -396,8 +396,18 @@ def _convert_smplh_to_woodfbx(
     if isinstance(trans, torch.Tensor):
         trans = trans.numpy()
 
+    # Detect scale factor
+    unit = fbxScene.GetGlobalSettings().GetSystemUnit()
+    unit_factor = unit.GetScaleFactor() # Scale factor to CM
+    
+    # Final scale: Source (Meters) -> Target Units
+    # If scale is 0.0 (auto), use 100 / unit_factor
+    # (e.g. for CM, 100 / 1.0 = 100. For M, 100 / 100 = 1.0)
+    final_scale = scale if scale > 1e-4 else (100.0 / unit_factor)
+    
     # Apply scale to translation
-    translations = trans * scale
+    translations = trans * final_scale
+    print(f"[{'SMPLH2WoodFBX'}] Target System Unit: {unit.GetScaleFactor()} (factor), Applying Scale: {final_scale:.4f}")
 
     # Create FBX manager and load template
     fbxManager = fbx.FbxManager.Create()
@@ -504,7 +514,7 @@ class SMPLH2WoodFBX:
         self,
         template_fbx_path: str = "./assets/wooden_models/boy_Rigging_smplx_tex.fbx",
         smplh_to_fbx_mapping: Optional[Dict[str, str]] = None,
-        scale: float = 100,
+        scale: float = 0.0,
         absolute_root: bool = False,
     ):
         """

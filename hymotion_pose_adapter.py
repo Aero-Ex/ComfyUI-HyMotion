@@ -13,7 +13,9 @@ from tqdm import tqdm
 # =============================================================================
 
 # Path to your HY-Motion model directory (contains latest.ckpt or .safetensors)
-MODEL_DIR = "/home/aero/comfy/ComfyUI/models/hymotion/HY-Motion-1.0"
+# Automatically resolved relative to ComfyUI models directory if possible
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_DIR = os.path.join(os.path.dirname(os.path.dirname(BASE_DIR)), "models", "hymotion", "HY-Motion-1.0")
 
 # Path to your converted NPZ files (output of fbx_to_smplh_converter.py)
 DATA_DIR = "/path/to/your/converted/npz"  # <-- CHANGE THIS!
@@ -116,7 +118,7 @@ def load_pretrained_hymotion(model_dir: str = MODEL_DIR, device: str = "cuda"):
     network = network.to(device)
     network.eval()  # Base model stays in eval mode
     
-    print(f"[PoseAdapter] ✅ Base model loaded successfully!")
+    print(f"[PoseAdapter] [OK] Base model loaded successfully!")
     return network, config
 
 
@@ -524,7 +526,7 @@ class PoseAdapterTrainer:
         ESTIMATED TIME: 5-10 minutes on L40S
         """
         print("\n" + "=" * 60)
-        print("🔍 SANITY CHECK SUITE - Verifying before training...")
+        print("SANITY CHECK SUITE - Verifying before training...")
         print("=" * 60)
         
         all_passed = True
@@ -636,25 +638,25 @@ class PoseAdapterTrainer:
                 print(f"    Total:     {total:.2f} GB")
                 
                 if reserved > total * 0.95:
-                    print("  ⚠️  WARNING: Memory is almost full! Consider reducing batch size.")
+                    print("  [WARNING] Memory is almost full! Consider reducing batch size.")
                 else:
                     headroom = total - reserved
-                    print(f"  ✅ PASS: {headroom:.1f} GB headroom available")
+                    print(f"  [OK] {headroom:.1f} GB headroom available")
             else:
-                print("  ⚠️  WARNING: Not running on CUDA")
+                print("  [WARNING] Not running on CUDA")
         except Exception as e:
-            print(f"  ⚠️  WARNING: Could not check memory: {e}")
+            print(f"  [WARNING] Could not check memory: {e}")
         
         # =====================================================================
         # FINAL VERDICT
         # =====================================================================
         print("\n" + "=" * 60)
         if all_passed:
-            print("✅ ALL SANITY CHECKS PASSED - Safe to start training!")
+            print("[OK] ALL SANITY CHECKS PASSED - Safe to start training!")
             print("=" * 60)
             return True
         else:
-            print("❌ SANITY CHECKS FAILED - DO NOT START TRAINING!")
+            print("[ERROR] SANITY CHECKS FAILED - DO NOT START TRAINING!")
             print("   Fix the issues above before renting GPU time.")
             print("=" * 60)
             return False
@@ -670,12 +672,12 @@ class PoseAdapterTrainer:
         # Run sanity checks first (unless skipped)
         if not skip_sanity_checks:
             if not self.run_sanity_checks():
-                print("\n⛔ Training aborted due to failed sanity checks.")
+                print("\n[STOP] Training aborted due to failed sanity checks.")
                 print("   Use train(skip_sanity_checks=True) to force start (not recommended)")
                 return
         
         print("\n" + "=" * 60)
-        print("🚀 PHASE 1: POSE-TO-POSE ADAPTER TRAINING")
+        print("PHASE 1: POSE-TO-POSE ADAPTER TRAINING")
         print(f"Device: {self.device}")
         print(f"Batch Size: {self.dataloader.batch_size}")
         print(f"Dataset Size: {len(self.dataloader.dataset)} clips")
@@ -700,7 +702,7 @@ class PoseAdapterTrainer:
                 
                 # EARLY ABORT: If loss explodes, stop immediately
                 if losses['loss_flow'] > 100 or np.isnan(losses['loss_flow']):
-                    print(f"\n⛔ EMERGENCY STOP: Loss exploded ({losses['loss_flow']})")
+                    print(f"\n[EMERGENCY STOP] Loss exploded ({losses['loss_flow']})")
                     print("   This usually means learning rate is too high.")
                     self.save_checkpoint(global_step)
                     return
@@ -710,7 +712,7 @@ class PoseAdapterTrainer:
                     first_100 = np.mean(loss_history[:100])
                     last_100 = np.mean(loss_history[-100:])
                     if last_100 >= first_100 * 0.98:
-                        print(f"\n⚠️ WARNING: Loss stagnant after 1000 steps")
+                        print(f"\n[WARNING] Loss stagnant after 1000 steps")
                         print(f"   First 100 avg: {first_100:.6f}")
                         print(f"   Last 100 avg:  {last_100:.6f}")
                         print("   Consider stopping and checking the setup.")
@@ -720,7 +722,7 @@ class PoseAdapterTrainer:
                     self.validate(global_step)
                     self.save_checkpoint(global_step)
         
-        print("\n✅ Training Complete!")
+        print("\n[OK] Training Complete!")
         self.save_checkpoint(global_step)
 
 
@@ -759,30 +761,30 @@ def main():
     args = parser.parse_args()
     
     print("=" * 60)
-    print("🧠 HY-Motion Pose-to-Pose Adapter - Phase 1 Training")
+    print("HY-Motion Pose-to-Pose Adapter - Phase 1 Training")
     print("=" * 60)
     
     # =========================================================================
     # Step 1: Verify paths
     # =========================================================================
-    print(f"\n📁 Model directory: {args.model_dir}")
-    print(f"📁 Data directory:  {args.data_dir}")
-    print(f"📁 Output directory: {args.checkpoint_dir}")
+    print(f"\n[INFO] Model directory: {args.model_dir}")
+    print(f"[INFO] Data directory:  {args.data_dir}")
+    print(f"[INFO] Output directory: {args.checkpoint_dir}")
     
     if not os.path.exists(args.model_dir):
-        print(f"\n❌ ERROR: Model directory not found: {args.model_dir}")
+        print(f"\n[ERROR] Model directory not found: {args.model_dir}")
         print("   Please download HY-Motion-1.0 and set the correct path.")
         return
     
     if args.data_dir == "/path/to/your/converted/npz":
-        print(f"\n❌ ERROR: You need to set DATA_DIR to your converted NPZ folder!")
+        print(f"\n[ERROR] You need to set DATA_DIR to your converted NPZ folder!")
         print("   1. First convert your FBX files:")
         print("      python fbx_to_smplh_converter.py --input /your/fbx --output /your/npz")
         print("   2. Then edit DATA_DIR at the top of this file")
         return
     
     if not os.path.exists(args.data_dir):
-        print(f"\n❌ ERROR: Data directory not found: {args.data_dir}")
+        print(f"\n[ERROR] Data directory not found: {args.data_dir}")
         print("   Run the FBX converter first:")
         print("   python fbx_to_smplh_converter.py --input /your/fbx --output /your/npz")
         return
@@ -790,49 +792,49 @@ def main():
     # =========================================================================
     # Step 2: Load dataset
     # =========================================================================
-    print(f"\n📊 Loading dataset from {args.data_dir}...")
+    print(f"\n[INFO] Loading dataset from {args.data_dir}...")
     dataset = ConvertedMotionDataset(args.data_dir, seq_len=120, stride=60)
     
     if len(dataset) == 0:
-        print("❌ ERROR: No training clips found in dataset!")
+        print("[ERROR] No training clips found in dataset!")
         print("   Make sure your NPZ files contain 'poses' and 'trans' arrays.")
         return
     
-    print(f"✅ Loaded {len(dataset)} training clips")
+    print(f"[OK] Loaded {len(dataset)} training clips")
     
     # =========================================================================
     # Step 3: Load base model
     # =========================================================================
-    print(f"\n🤖 Loading base HY-Motion model...")
+    print(f"\n[INFO] Loading base HY-Motion model...")
     try:
         base_model, config = load_pretrained_hymotion(args.model_dir, args.device)
     except Exception as e:
-        print(f"❌ ERROR: Failed to load base model: {e}")
+        print(f"[ERROR] Failed to load base model: {e}")
         import traceback
         traceback.print_exc()
         return
     
     # Get the adapter feat_dim from base model config
     feat_dim = config["network_module_args"]["feat_dim"]  # 1280 for full, 1024 for lite
-    print(f"✅ Base model loaded. Adapter dimension: {feat_dim}")
+    print(f"[OK] Base model loaded. Adapter dimension: {feat_dim}")
     
     # =========================================================================
     # Step 4: Create Pose Encoder and Guided Model
     # =========================================================================
-    print(f"\n🔧 Creating Pose Encoder...")
+    print(f"\n[INFO] Creating Pose Encoder...")
     pose_encoder = PoseEncoder(input_dim=201, feat_dim=feat_dim)
     guided_model = GuidedHunyuanMMDiT(base_model, pose_encoder, injection_scale=1.0)
     
     # Count parameters
     trainable_params = sum(p.numel() for p in pose_encoder.parameters() if p.requires_grad)
     frozen_params = sum(p.numel() for p in base_model.parameters())
-    print(f"✅ Trainable parameters: {trainable_params:,} (Pose Encoder)")
+    print(f"[OK] Trainable parameters: {trainable_params:,} (Pose Encoder)")
     print(f"   Frozen parameters:   {frozen_params:,} (Base Model)")
     
     # =========================================================================
     # Step 5: Create trainer and start training
     # =========================================================================
-    print(f"\n🚀 Initializing trainer...")
+    print(f"\n[INFO] Initializing trainer...")
     trainer = PoseAdapterTrainer(
         model=guided_model,
         dataset=dataset,
@@ -844,7 +846,7 @@ def main():
     )
     
     print(f"\n{'='*60}")
-    print(f"📋 TRAINING CONFIGURATION")
+    print(f"TRAINING CONFIGURATION")
     print(f"{'='*60}")
     print(f"   Epochs:      {args.epochs}")
     print(f"   Batch Size:  {args.batch_size}")
@@ -857,7 +859,7 @@ def main():
     trainer.train(num_epochs=args.epochs, skip_sanity_checks=args.skip_sanity)
     
     print("\n" + "=" * 60)
-    print("🎉 Training session complete!")
+    print("Training session complete!")
     print(f"   Checkpoints saved to: {args.checkpoint_dir}")
     print("=" * 60)
 

@@ -5,8 +5,8 @@ Encodes motion data into the 201-dimensional latent space used by the DiT model.
 
 Latent Vector Layout (201 Dimensions):
     0:3     - Root Translation (X, Y, Z)
-    3:135   - 22 Joints in 6D Column-Major Rotation (22 × 6 = 132)
-    135:201 - 22 Joint 3D Positions relative to root (22 × 3 = 66)
+    3:135   - 22 Joints in 6D Column-Major Rotation (22 x 6 = 132)
+    135:201 - 22 Joint 3D Positions relative to root (22 x 3 = 66)
 """
 
 import torch
@@ -20,8 +20,8 @@ class MotionEncoder:
     
     The latent format matches HY-Motion 1.0's training data:
     - Positions 0-2: Root translation (X, Y, Z)
-    - Positions 3-134: 22 joints × 6D rotation (column-major)
-    - Positions 135-200: 22 joints × 3D position (relative to root)
+    - Positions 3-134: 22 joints x 6D rotation (column-major)
+    - Positions 135-200: 22 joints x 3D position (relative to root)
     """
     
     def __init__(self, mean: Optional[torch.Tensor] = None, std: Optional[torch.Tensor] = None):
