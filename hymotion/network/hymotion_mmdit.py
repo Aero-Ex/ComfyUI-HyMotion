@@ -548,9 +548,9 @@ class HunyuanMotionMMDiT(nn.Module):
         """
         NOTE:
                 motion_k  text_k
-        motion_q [M→M]   [M→T]
-        text_q   [T→M]   [T→T]
-        only [M→M] contains given mask
+        motion_q [M->M]   [M->T]
+        text_q   [T->M]   [T->T]
+        only [M->M] contains given mask
         """
         total_len = motion_len + text_len
         base = torch.zeros((bsz, 1, total_len, total_len), dtype=dtype, device=device)
@@ -566,7 +566,7 @@ class HunyuanMotionMMDiT(nn.Module):
                 pad = torch.zeros((bsz, text_len), dtype=key_padding_mask.dtype, device=device)
                 key_padding_mask = torch.cat((key_padding_mask, pad), dim=-1)
             base = base + key_padding_mask.view(bsz, 1, 1, total_len)
-        # disable T→M
+        # disable T->M
         base[:, :, motion_len:, :motion_len] = float("-inf")
         return base
 
@@ -583,9 +583,9 @@ class HunyuanMotionMMDiT(nn.Module):
         """
         NOTE:
                 motion_k  text_k
-        motion_q [M→M]   [M→T]
-        text_q   [T→M]   [T→T]
-        only [M→M] contains given mask
+        motion_q [M->M]   [M->T]
+        text_q   [T->M]   [T->T]
+        only [M->M] contains given mask
         """
         base = torch.zeros((bsz, 1, total_len, total_len), dtype=dtype, device=device)
         if attn_mask is not None:
@@ -602,7 +602,7 @@ class HunyuanMotionMMDiT(nn.Module):
                 )
                 key_padding_mask = torch.cat((key_padding_mask, pad), dim=-1)
             base = base + key_padding_mask.view(bsz, 1, 1, total_len)
-        # disable T→M
+        # disable T->M
         base[:, :, split_len:, :split_len] = float("-inf")
         return base
 

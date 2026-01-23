@@ -153,8 +153,8 @@ class HYMotionDiTLoader:
         raw_options = folder_paths.get_filename_list("hymotion")
         model_options = []
         for f in raw_options:
-            # Extract parent directory if it's a file inside a folder
-            name = os.path.dirname(f) if "/" in f else f
+            # Extract parent directory if it's a file inside a folder (platform-agnostic)
+            name = os.path.dirname(f) if "/" in f or "\\" in f else f
             if name and name not in model_options:
                 model_options.append(name)
         
@@ -257,11 +257,11 @@ class HYMotionDiTLoader:
 
             # Diagnostic logging
             print(f"[HY-Motion] Loading checkpoint features:")
-            if checkpoint_mean is not None: print(f"  - found mean")
-            if checkpoint_std is not None: print(f"  - found std")
-            if null_vtxt_feat is not None: print(f"  - found learned null_vtxt_feat")
-            if null_ctxt_input is not None: print(f"  - found learned null_ctxt_input")
-            if spec_vtxt is not None: print(f"  - found special_game features")
+            if checkpoint_mean is not None: print(f"  [OK] found mean")
+            if checkpoint_std is not None: print(f"  [OK] found std")
+            if null_vtxt_feat is not None: print(f"  [OK] found learned null_vtxt_feat")
+            if null_ctxt_input is not None: print(f"  [OK] found learned null_ctxt_input")
+            if spec_vtxt is not None: print(f"  [OK] found special_game features")
             
             # Map state dict keys to network keys
             prefixes_to_strip = ["network.", "motion_transformer.", "module."]
@@ -342,9 +342,6 @@ class HYMotionDiTLoader:
             train_frames=train_frames
         )
         
-        if dit_wrapper.mean is not None:
-            print(f"[HY-Motion] STATS DEBUG (Checkpoint Mean): {dit_wrapper.mean.flatten()[:3].cpu().numpy()}")
-            print(f"[HY-Motion] STATS DEBUG (Checkpoint Std):  {dit_wrapper.std.flatten()[:3].cpu().numpy()}")
         
         print(f"[HY-Motion] DiT loaded on {target_device}")
         
@@ -808,7 +805,6 @@ class HYMotionSampler:
         smoothing_window = int(smoothing_window)
         if smoothing_window % 2 == 0: smoothing_window += 1 # Must be odd
 
-        print(f"[HY-Motion] DEBUG: num_samples received = {num_samples}")
         print(f"[HY-Motion] Generating {duration}s motion with {num_samples} sample(s)")
         
         # Prepare seeds
@@ -844,8 +840,6 @@ class HYMotionSampler:
             sq = (t**2).mean().sqrt().item()
             return f"{name}: mean={m:.4f}, std={s:.4f}, rms={sq:.4f}"
 
-        print(f"[HY-Motion] QUALITY CHECK: {get_stats(vtxt, 'vtxt')}")
-        print(f"[HY-Motion] QUALITY CHECK: {get_stats(ctxt, 'ctxt')}")
         
         if torch.isnan(vtxt).any(): print("[HY-Motion] ERROR: vtxt (CLIP) contains NaNs!")
         if torch.isnan(ctxt).any(): print("[HY-Motion] ERROR: ctxt (LLM) contains NaNs!")
@@ -962,7 +956,6 @@ class HYMotionSampler:
                     # doesn't "jump" from the floor to its natural height.
                     root_offset = first_frame.transl.clone().to(dit_model.device)
                     root_offset[..., 1] = 0 # Zero out Y in the offset
-                    print(f"[HY-Motion] DEBUG: Input first_frame transl: {first_frame.transl.cpu().numpy()}")
                     
                     # Create a relative version for conditioning (preserves Y)
                     local_first_frame = HYMotionFrame(
@@ -971,18 +964,14 @@ class HYMotionSampler:
                     )
                     first_latent = normalize_frame(local_first_frame)
                     print(f"[HY-Motion] Horizontal root offset extracted: {root_offset.cpu().numpy()}")
-                    print(f"[HY-Motion] DEBUG: Local first_frame transl (should have original Y): {local_first_frame.transl.numpy()}")
-                    print(f"[HY-Motion] DEBUG: Normalized first_latent transl (dim 0-3): {first_latent[:, :3].cpu().numpy()}")
                 
                 if last_frame is not None:
-                    print(f"[HY-Motion] DEBUG: Input last_frame transl: {last_frame.transl.cpu().numpy()}")
                     # For last frame, we make it relative to the first frame's offset
                     local_last_frame = HYMotionFrame(
                         rot6d=last_frame.rot6d,
                         transl=(last_frame.transl.to(dit_model.device) - root_offset).cpu()
                     )
                     last_latent = normalize_frame(local_last_frame)
-                    print(f"[HY-Motion] DEBUG: Normalized last_latent transl (dim 0-3): {last_latent[:, :3].cpu().numpy()}")
             else:
                 print("[HY-Motion] WARNING: Cannot condition frames without normalization stats!")
 
@@ -1170,7 +1159,7 @@ class HYMotionSampler:
                              target_data[:, i, :3] = target_data[:, i, :3] + delta
                     
                     if step_counter[0] == 0:
-                         print(f"[HY-Motion] Momentum Injection Active! Guiding Root Translation along extrapolated path.")
+                        print(f"[HY-Motion] [INFO] Momentum Injection Active! Guiding Root Translation along extrapolated path.")
 
                 # Calculate specific target velocity for Flow Matching
                 v_target = None
@@ -1191,26 +1180,6 @@ class HYMotionSampler:
                     if first_latent is not None and last_latent is None:
                          w[..., :3] = 0.0
 
-                # DEBUG: Log the Conflict (Difference between Native Prediction and Guidance)
-                if step_counter[0] < 5: # Only log first 5 steps
-                    # Only look at the transition frames where we apply guidance
-                    mask_active = w > 0.01
-                    if mask_active.any() and v_target is not None:
-                        native_pred = x_pred
-                        conflict = torch.abs(native_pred - v_target)
-                        
-                        rot_conflict = 0.0
-                        if mask_active[..., 3:135].any():
-                            rot_conflict = conflict[..., 3:135][mask_active[..., 3:135]].mean().item()
-                            
-                        trans_conflict = 0.0
-                        if mask_active[..., :3].any():
-                            trans_conflict = conflict[..., :3][mask_active[..., :3]].mean().item()
-                        
-                        origin = "MOMENTUM" if is_momentum else "POSE-DIFF"
-                        print(f"[HY-Motion] Step {step_counter[0]} GUIDANCE DELTA ({origin}): Rot={rot_conflict:.4f}, Trans={trans_conflict:.4f}")
-                        if rot_conflict > 1.5:
-                             print(f"[HY-Motion] INFO: Strong guidance applied (Enforcing continuity over immediate prompt adherence).")
                 
                 # Blend predicted velocity with target velocity
                 if v_target is not None:
@@ -1277,7 +1246,7 @@ class HYMotionSampler:
             print(f"[HY-Motion] Denorm output range: [{latent_denorm.min():.4f}, {latent_denorm.max():.4f}]")
         else:
             latent_denorm = latent_output
-            print("[HY-Motion] ⚠ CRITICAL: No normalization stats! Results will be garbage.")
+            print("[HY-Motion] CRITICAL: No normalization stats! Results will be garbage.")
 
         
         # Decode motion (matching official _decode_o6dp)
@@ -1285,7 +1254,6 @@ class HYMotionSampler:
         B, L = latent_denorm.shape[:2]
         
         transl = latent_denorm[..., 0:3].clone()
-        print(f"[HY-Motion] DEBUG: Raw decoded transl[0]: {transl[:, 0, :].cpu().numpy()}")
         root_rot6d = latent_denorm[..., 3:9].reshape(B, L, 1, 6).clone()
         body_rot6d = latent_denorm[..., 9:9+21*6].reshape(B, L, 21, 6).clone()
         rot6d = torch.cat([root_rot6d, body_rot6d], dim=2)  # (B, L, 22, 6)
@@ -1353,53 +1321,6 @@ class HYMotionSampler:
                 ramp_rot_end = torch.linspace(0, 1, blend_len, device=rot6d_smooth.device).view(1, -1, 1, 1)
                 rot6d_smooth[:, -blend_len:, :, :] = (1 - ramp_rot_end) * rot6d_smooth[:, -blend_len:, :, :] + ramp_rot_end * rot6d[:, -blend_len:, :, :]
 
-            # Detailed Transition Logging (Start & End)
-            # We add root_offset back for the logs so the user sees absolute coordinates
-            print("[HY-Motion] === SEAMLESS LOOP QUALITY CHECK (Absolute Coordinates) ===")
-            if first_frame is not None:
-                target_t = first_frame.transl.to(transl_smooth).flatten()
-                target_r = first_frame.rot6d.to(rot6d_smooth)
-                
-                raw_t = (transl[:, 0, :] + root_offset.to(transl)).flatten()
-                raw_r = rot6d[:, 0, :, :]
-                
-                smooth_t = (transl_smooth[:, 0, :] + root_offset.to(transl_smooth)).flatten()
-                smooth_r = rot6d_smooth[:, 0, :, :]
-                
-                t_diff_raw = torch.norm(raw_t - target_t).item()
-                t_diff_smooth = torch.norm(smooth_t - target_t).item()
-                r_diff_raw = torch.abs(raw_r - target_r).mean().item()
-                r_diff_smooth = torch.abs(smooth_r - target_r).mean().item()
-                
-                print(f"[HY-Motion] START FRAME (0):")
-                print(f"  Target Transl: {target_t.cpu().numpy()}")
-                print(f"  Raw Transl:    {raw_t.cpu().numpy()} (Diff: {t_diff_raw:.6f})")
-                print(f"  Smooth Transl: {smooth_t.cpu().numpy()} (Diff: {t_diff_smooth:.6f})")
-                print(f"  Rot Diff (Raw):    {r_diff_raw:.6f}")
-                print(f"  Rot Diff (Smooth): {r_diff_smooth:.6f}")
-
-            if last_frame is not None:
-                target_t = last_frame.transl.to(transl_smooth).flatten()
-                target_r = last_frame.rot6d.to(rot6d_smooth)
-                
-                raw_t = (transl[:, -1, :] + root_offset.to(transl)).flatten()
-                raw_r = rot6d[:, -1, :, :]
-                
-                smooth_t = (transl_smooth[:, -1, :] + root_offset.to(transl_smooth)).flatten()
-                smooth_r = rot6d_smooth[:, -1, :, :]
-                
-                t_diff_raw = torch.norm(raw_t - target_t).item()
-                t_diff_smooth = torch.norm(smooth_t - target_t).item()
-                r_diff_raw = torch.abs(raw_r - target_r).mean().item()
-                r_diff_smooth = torch.abs(smooth_r - target_r).mean().item()
-                
-                print(f"[HY-Motion] END FRAME ({num_frames-1}):")
-                print(f"  Target Transl: {target_t.cpu().numpy()}")
-                print(f"  Raw Transl:    {raw_t.cpu().numpy()} (Diff: {t_diff_raw:.6f})")
-                print(f"  Smooth Transl: {smooth_t.cpu().numpy()} (Diff: {t_diff_smooth:.6f})")
-                print(f"  Rot Diff (Raw):    {r_diff_raw:.6f}")
-                print(f"  Rot Diff (Smooth): {r_diff_smooth:.6f}")
-            print("[HY-Motion] ===================================")
         
         # Handle 52-joint upsampling if original inputs were 52 joints
         output_52_joints = False
@@ -1494,7 +1415,7 @@ class HYMotionSampler:
                 dist = np.linalg.norm(p_v - o_v)
                 print(f"  - Translation Connection: DISTANCE={dist:.6f}")
                 if dist > 1e-4:
-                    print(f"    ⚠ WARNING: Translation discontinuity detected ({p_v} -> {o_v})")
+                    print(f"    [WARNING] Translation discontinuity detected ({p_v} -> {o_v})")
 
                 # Match batch sizes if needed
                 if p_rot6d.shape[0] != rot6d_cpu.shape[0]:
@@ -1563,7 +1484,6 @@ class HYMotionSampler:
             "root_rotations_mat": root_rot_mat,
         }
         
-        print(f"[HY-Motion] DEBUG: Final output transl[0]: {output_dict['transl'][:, 0, :].numpy()}")
         
         # Create motion data wrapper
         motion_data_out = HYMotionData(
@@ -1600,11 +1520,11 @@ class HYMotionModularExportFBX:
                     "tooltip": "Frames per second for the exported animation. 30 FPS is standard."
                 }),
                 "scale": ("FLOAT", {
-                    "default": 100.0, 
+                    "default": 0.0, 
                     "min": 0.00, 
                     "max": 1000.0, 
                     "step": 0.01,
-                    "tooltip": "Scale factor for FBX export. Use 100.0 for cm (Blender/Maya), 1.0 for meters (Unity), 0.0 for zero translation."
+                    "tooltip": "Scale factor for FBX export. 0.0 for auto-matching (recommended). 100.0 for cm (Blender/Maya), 1.0 for meters (Unity)."
                 }),
                 "output_dir": ("STRING", {
                     "default": "hymotion_fbx",
