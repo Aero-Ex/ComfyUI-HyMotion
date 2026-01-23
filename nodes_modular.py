@@ -257,11 +257,11 @@ class HYMotionDiTLoader:
 
             # Diagnostic logging
             print(f"[HY-Motion] Loading checkpoint features:")
-            if checkpoint_mean is not None: print(f"  ✓ found mean")
-            if checkpoint_std is not None: print(f"  ✓ found std")
-            if null_vtxt_feat is not None: print(f"  ✓ found learned null_vtxt_feat")
-            if null_ctxt_input is not None: print(f"  ✓ found learned null_ctxt_input")
-            if spec_vtxt is not None: print(f"  ✓ found special_game features")
+            if checkpoint_mean is not None: print(f"  - found mean")
+            if checkpoint_std is not None: print(f"  - found std")
+            if null_vtxt_feat is not None: print(f"  - found learned null_vtxt_feat")
+            if null_ctxt_input is not None: print(f"  - found learned null_ctxt_input")
+            if spec_vtxt is not None: print(f"  - found special_game features")
             
             # Map state dict keys to network keys
             prefixes_to_strip = ["network.", "motion_transformer.", "module."]
@@ -851,9 +851,9 @@ class HYMotionSampler:
         if torch.isnan(ctxt).any(): print("[HY-Motion] ERROR: ctxt (LLM) contains NaNs!")
         
         if ctxt.std() < 1e-4:
-            print("[HY-Motion] ⚠ WARNING: LLM context (ctxt) is almost zero. Generation will be unconditioned!")
+            print("[HY-Motion] WARNING: LLM context (ctxt) is almost zero. Generation will be unconditioned!")
         if vtxt.std() < 1e-4:
-            print("[HY-Motion] ⚠ WARNING: CLIP context (vtxt) is almost zero. Generation will be unconditioned!")
+            print("[HY-Motion] WARNING: CLIP context (vtxt) is almost zero. Generation will be unconditioned!")
         
         if use_special_game_feat:
             # Match official _maybe_inject_source_token logic
@@ -1170,7 +1170,7 @@ class HYMotionSampler:
                              target_data[:, i, :3] = target_data[:, i, :3] + delta
                     
                     if step_counter[0] == 0:
-                         print(f"[HY-Motion] 🚀 Momentum Injection Active! Guiding Root Translation along extrapolated path.")
+                         print(f"[HY-Motion] Momentum Injection Active! Guiding Root Translation along extrapolated path.")
 
                 # Calculate specific target velocity for Flow Matching
                 v_target = None
@@ -1210,7 +1210,7 @@ class HYMotionSampler:
                         origin = "MOMENTUM" if is_momentum else "POSE-DIFF"
                         print(f"[HY-Motion] Step {step_counter[0]} GUIDANCE DELTA ({origin}): Rot={rot_conflict:.4f}, Trans={trans_conflict:.4f}")
                         if rot_conflict > 1.5:
-                             print(f"[HY-Motion] ℹ Strong guidance applied (Enforcing continuity over immediate prompt adherence).")
+                             print(f"[HY-Motion] INFO: Strong guidance applied (Enforcing continuity over immediate prompt adherence).")
                 
                 # Blend predicted velocity with target velocity
                 if v_target is not None:
