@@ -1519,13 +1519,13 @@ class HYMotionModularExportFBX:
                     "step": 0.1,
                     "tooltip": "Frames per second for the exported animation. 30 FPS is standard."
                 }),
-                "scale": ("FLOAT", {
-                    "default": 0.0, 
-                    "min": 0.00, 
-                    "max": 1000.0, 
-                    "step": 0.01,
-                    "tooltip": "Scale factor for FBX export. 0.0 for auto-matching (recommended). 100.0 for cm (Blender/Maya), 1.0 for meters (Unity)."
-                }),
+                # "scale": ("FLOAT", {
+                #     "default": 0.0, 
+                #     "min": 0.00, 
+                #     "max": 1000.0, 
+                #     "step": 0.01,
+                #     "tooltip": "Scale factor for FBX export. 0.0 for auto-matching (recommended). 100.0 for cm (Blender/Maya), 1.0 for meters (Unity)."
+                # }),
                 "output_dir": ("STRING", {
                     "default": "hymotion_fbx",
                     "tooltip": "Subdirectory in ComfyUI output folder where FBX files will be saved."
@@ -1572,8 +1572,8 @@ class HYMotionModularExportFBX:
     CATEGORY = "HY-Motion/modular"
     OUTPUT_NODE = True
 
-    def export_fbx(self, motion_data: HYMotionData, template_name: str, fps: float, scale: float, output_dir: str, filename_prefix: str, 
-                   batch_index: int = 0, in_place: bool = False, in_place_x: bool = False, in_place_y: bool = False, in_place_z: bool = False,
+    def export_fbx(self, motion_data: HYMotionData, template_name: str, fps: float, output_dir: str, filename_prefix: str, 
+                   batch_index: int = 0, scale: float = 100.0, in_place: bool = False, in_place_x: bool = False, in_place_y: bool = False, in_place_z: bool = False,
                    absolute_root: bool = True):
         # Resolve template path - use dropdown selection or fallback to default
         template_fbx_path = folder_paths.get_full_path("hymotion_fbx_templates", template_name)
@@ -2018,13 +2018,13 @@ class HYMotionRetargetFBX:
                     "step": 1.0,
                     "tooltip": "Rotate the character around Y-axis in degrees (e.g., 180 to make them face the opposite direction)."
                 }),
-                "scale": ("FLOAT", {
-                    "default": 0.0, 
-                    "min": 0.0, 
-                    "max": 100.0, 
-                    "step": 0.01,
-                    "tooltip": "Force specific scale multiplier. Leave at 0.0 for automatic height-based scaling (recommended)."
-                }),
+                # "scale": ("FLOAT", {
+                #     "default": 0.0, 
+                #     "min": 0.0, 
+                #     "max": 100.0, 
+                #     "step": 0.01,
+                #     "tooltip": "Force specific scale multiplier. Leave at 0.0 for automatic height-based scaling (recommended)."
+                # }),
                 "neutral_fingers": ("BOOLEAN", {
                     "default": True,
                     "tooltip": "Use neutral finger rest pose to preserve natural finger curl from source animation. Disable for legacy behavior."
@@ -2053,6 +2053,10 @@ class HYMotionRetargetFBX:
                     "default": False,
                     "tooltip": "If enabled, keeps the character's absolute world position from the motion data. Disable to automatically center the character at the start (fixes 'jumps' when stitching)."
                 }),
+                # "auto_stride": ("BOOLEAN", {
+                #     "default": True,
+                #     "tooltip": "If enabled, scales the character's stride to match their anatomical proportions (Proportional Retargeting). Helps fix 'drifting' or 'sliding' when retargeting to significantly taller/shorter characters."
+                # }),
             }
         }
     
@@ -2063,8 +2067,9 @@ class HYMotionRetargetFBX:
     OUTPUT_NODE = True
     
     def retarget(self, motion_data, target_fbx, output_dir="hymotion_retarget", filename_prefix="retarget", 
-                 mapping_file="", yaw_offset=0.0, scale=0.0, neutral_fingers=True, unique_names=True, 
-                 in_place=False, in_place_x=False, in_place_y=False, in_place_z=False, preserve_position=False):
+                 mapping_file="", yaw_offset=0.0, scale=100.0, neutral_fingers=True, unique_names=True, 
+                 in_place=False, in_place_x=False, in_place_y=False, in_place_z=False, preserve_position=False,
+                 auto_stride=True):
         """Retarget motion to custom FBX skeleton."""
         
         # Resolve target FBX path robustly
@@ -2161,8 +2166,15 @@ class HYMotionRetargetFBX:
                     mapping = load_bone_mapping(mapping_file, src_skel_loaded, tgt_skel)
                     rots, locs, active = retarget_animation(
                         src_skel_loaded, tgt_skel, mapping, 
-                        scale, yaw_offset, neutral_fingers, in_place,
-                        in_place_x, in_place_y, in_place_z, preserve_position
+                        force_scale=scale, 
+                        yaw_offset=yaw_offset, 
+                        neutral_fingers=neutral_fingers, 
+                        in_place=in_place,
+                        in_place_x=in_place_x, 
+                        in_place_y=in_place_y, 
+                        in_place_z=in_place_z, 
+                        preserve_position=preserve_position,
+                        auto_stride=auto_stride
                     )
                     
                     # Apply and save

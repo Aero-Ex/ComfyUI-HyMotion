@@ -285,8 +285,17 @@ def load_npz(data_or_path: str | dict) -> Skeleton:
     poses = data.get('poses')
     
     T = kps.shape[0]
-    # Global coordinates = Local keypoints + Translation
-    global_kps = kps + transl[:, np.newaxis, :]
+    
+    # HY-MOTION SYNC FIX: Detect if keypoints are already in World Space
+    # In some NPZ variants (like the user's), keypoints3d already includes translation.
+    # In others (standard SMPL), they are relative to Pelvis at origin.
+    kps_travel = np.linalg.norm(kps[-1, 0] - kps[0, 0])
+    if kps_travel > 0.1:
+        print(f"[Retarget] NPZ Detect: Keypoints are already animated (Travel={kps_travel:.2f}m). Skipping Transl addition.")
+        global_kps = kps.copy()
+    else:
+        print(f"[Retarget] NPZ Detect: Keypoints are relative to root. Adding Transl vector.")
+        global_kps = kps + transl[:, np.newaxis, :]
     
     names = [
         "Pelvis", "L_Hip", "R_Hip", "Spine1", "L_Knee", "R_Knee", "Spine2", "L_Ankle", "R_Ankle", "Spine3", 
@@ -997,6 +1006,20 @@ def load_bone_mapping(filepath: str, src_skel: Skeleton, tgt_skel: Skeleton) -> 
     mapped_targets = set()
     mapped_sources = set()
     
+    # Pre-populate from initial mapping (hardcoded BASE_BONE_MAPPING keys)
+    for s_name, t_val in mapping.items():
+        if s_name == "__preset__": continue
+        s_bone = src_skel.get_bone_case_insensitive(s_name)
+        if not s_bone: continue
+        
+        t_names = [t_val] if isinstance(t_val, str) else t_val
+        for tn in t_names:
+            t_bone = tgt_skel.get_bone_case_insensitive(tn)
+            if t_bone:
+                mapped_targets.add(t_bone.name)
+                mapped_sources.add(s_bone.name.lower())
+                match_count += 1
+    
     # Strategy: 
     # 1. Name-based matching for stable semantic names.
     # 2. Geometric matching for everything else (especially UniRig bone_X).
@@ -1320,6 +1343,7 @@ def load_bone_mapping(filepath: str, src_skel: Skeleton, tgt_skel: Skeleton) -> 
                 
                 for sf in s_fingers:
                     if sf.name.lower() in mapped_sources: continue
+                    s_rel = sf.head - s_wrist.head
                     t_rel_norm = t_rel / tgt_h
                     s_rel_norm = s_rel / src_h
                     dist = np.linalg.norm(t_rel_norm - s_rel_norm)
@@ -1613,7 +1637,7 @@ def apply_retargeted_animation(scene, skeleton, ret_rots, ret_locs, fstart, fend
             
             for f, q_local in ret_rots[name].items():
                 t = FbxTime()
-                t.SetFrame(f, tmode)
+                t.SetFrame(f - fstart, tmode) # Normalize to start at 0
                 
                 # Logic: R_combined = R_pre * R_local * R_post
                 # Thus R_local = R_pre_inv * R_combined * R_post_inv
@@ -1639,7 +1663,7 @@ def apply_retargeted_animation(scene, skeleton, ret_rots, ret_locs, fstart, fend
             tx.KeyModifyBegin(); ty.KeyModifyBegin(); tz.KeyModifyBegin()
             for f, loc in ret_locs[name].items():
                 t = FbxTime()
-                t.SetFrame(f, tmode)
+                t.SetFrame(f - fstart, tmode) # Normalize to start at 0
                 for c, val in zip([tx, ty, tz], loc):
                     idx = c.KeyAdd(t)[0]
                     c.KeySetValue(idx, float(val))
@@ -1649,7 +1673,7 @@ def apply_retargeted_animation(scene, skeleton, ret_rots, ret_locs, fstart, fend
         for i in range(node.GetChildCount()): apply_node(node.GetChild(i))
     apply_node(scene.GetRootNode())
 
-def retarget_animation(src_skel: Skeleton, tgt_skel: Skeleton, mapping: dict[str, str], force_scale: float = 0.0, yaw_offset: float = 0.0, neutral_fingers: bool = True, in_place: bool = False, in_place_x: bool = False, in_place_y: bool = False, in_place_z: bool = False, preserve_position: bool = False):
+def retarget_animation(src_skel: Skeleton, tgt_skel: Skeleton, mapping: dict[str, str], force_scale: float = 0.0, yaw_offset: float = 0.0, neutral_fingers: bool = True, in_place: bool = False, in_place_x: bool = False, in_place_y: bool = False, in_place_z: bool = False, preserve_position: bool = False, auto_stride: bool = False):
     print("Retargeting Animation...")
 
     is_ue5 = mapping.get("__preset__") == "ue5"
@@ -1788,7 +1812,11 @@ def retarget_animation(src_skel: Skeleton, tgt_skel: Skeleton, mapping: dict[str
         # t_skel.unit_scale is usually 1.0 (CM to CM) or 100 (M to CM)
         # Result: 100/1 = 100.0 (Scale meters to cm). 100/100 = 1.0 (Meters to Meters).
         scale = src_skel.unit_scale / tgt_skel.unit_scale
-        print(f"[INFO] Auto-Scale (Absolute): {scale:.4f} (Anatomical Ratio {anatomical_scale:.4f} ignored for physics)")
+        if auto_stride:
+            scale *= anatomical_scale
+            print(f"[INFO] Auto-Scale (Proportional): {scale:.4f} (Anatomical Ratio {anatomical_scale:.4f} applied for matching stride)")
+        else:
+            print(f"[INFO] Auto-Scale (Absolute): {scale:.4f} (Anatomical Ratio {anatomical_scale:.4f} ignored for physics)")
     
     print(f"[INFO] Height Check - Source: {src_h_cm:.2f}cm, Target: {tgt_h_cm:.2f}cm")
     print(f"[INFO] Final Retargeting Scale: {scale:.4f}")
@@ -1978,18 +2006,33 @@ def retarget_animation(src_skel: Skeleton, tgt_skel: Skeleton, mapping: dict[str
 
 
     # 5. Displacement and Local Rotations
+    root_bone = tgt_skel.get_bone_case_insensitive('pelvis') or tgt_skel.get_bone_case_insensitive('hips') or tgt_skel.get_bone_case_insensitive('root')
+    root_bone_name = root_bone.name if root_bone else ""
+    print(f"[Retarget] Identified Target Root for Translation: {root_bone_name}")
+
     for s_bone, t_bone_val, _ in active:
         # Handle list or single bone
         t_bone_list = t_bone_val if isinstance(t_bone_val, list) else [t_bone_val]
         t_bone_main = t_bone_list[0]
         
-        if t_bone_main.name == root_bone_name:
+        # Robust root name check
+        is_root = (t_bone_main.name == root_bone_name) or (t_bone_main.name.lower().split(':')[-1] in ['hips', 'pelvis', 'root'])
+        
+        if is_root:
             ret_locs[t_bone_main.name] = {}
             
             # GROUNDING FIX: Calculate floor levels for proper vertical alignment
-            # Source floor: Y=0 (SMPL-H/HyMotion convention)
+            # Detect Source Foot Floor (if available)
             s_floor = 0.0
-            
+            s_lfoot = src_skel.get_bone_case_insensitive('L_Ankle') or src_skel.get_bone_case_insensitive('l_foot')
+            s_rfoot = src_skel.get_bone_case_insensitive('R_Ankle') or src_skel.get_bone_case_insensitive('r_foot')
+            if s_lfoot or s_rfoot:
+                s_foot_ys = []
+                if s_lfoot: s_foot_ys.append(s_lfoot.head[1])
+                if s_rfoot: s_foot_ys.append(s_rfoot.head[1])
+                s_floor = min(s_foot_ys) if s_foot_ys else 0.0
+                print(f"[Retarget] Source Ground Level: {s_floor:.2f}")
+
             # Target floor: Minimum foot Y coordinate (handles rigs centered at hips)
             t_floor = 0.0
             t_lfoot = tgt_skel.get_bone_case_insensitive('leftfoot') or tgt_skel.get_bone_case_insensitive('l_foot')
@@ -1999,13 +2042,27 @@ def retarget_animation(src_skel: Skeleton, tgt_skel: Skeleton, mapping: dict[str
                 if t_lfoot: foot_ys.append(t_lfoot.head[1])
                 if t_rfoot: foot_ys.append(t_rfoot.head[1])
                 t_floor = min(foot_ys) if foot_ys else 0.0
-                print(f"[Retarget] Ground Level Detection: Target floor at Y={t_floor:.2f}")
+                print(f"[Retarget] Target Ground Level: {t_floor:.2f}")
             
             # Where the hips START in the source animation (Scaled and Transformed)
             s_rest_pos = s_bone.world_matrix[3, :3]
             s_pos_0 = s_bone.world_location_animation.get(frames[0], s_rest_pos)
             t_pos_0 = global_transform_q.apply(s_pos_0 * scale)
             
+            # FOOT-BASED SYNC: Detect horizontal center of feet at frame 0
+            foot_pos_0 = []
+            for sf in [s_lfoot, s_rfoot]:
+                if sf:
+                    p = sf.world_location_animation.get(frames[0], sf.head)
+                    foot_pos_0.append(global_transform_q.apply(p * scale))
+            
+            if foot_pos_0:
+                s_center_0 = np.mean(foot_pos_0, axis=0)
+                print(f"[Retarget] Foot-Based Centering: Using feet centroid {s_center_0}")
+            else:
+                s_center_0 = t_pos_0
+                print(f"[Retarget] Root-Based Centering (Fallback): Using root {s_center_0}")
+
             # AXIS-AWARE GROUNDING:
             h_offset = np.zeros(3)
             ground_offset = np.zeros(3)
@@ -2013,9 +2070,9 @@ def retarget_animation(src_skel: Skeleton, tgt_skel: Skeleton, mapping: dict[str
             if t_up_axis[1] == 1: # Y-Up (Unity, Unreal)
                 # Ground is X/Z plane, Up is Y
                 ground_offset = np.array([0.0, t_floor - (s_floor * scale), 0.0])
-                # Center X and Z (horizontal)
-                h_offset = np.array([-t_pos_0[0], 0.0, -t_pos_0[2]])
-                print(f"[Retarget] Axis System: Y-Up. Applying grounding to Y, centering X/Z.")
+                # Center X and Z (horizontal) based on feet centroid
+                h_offset = np.array([-s_center_0[0], 0.0, -s_center_0[2]])
+                print(f"[Retarget] Axis System: Y-Up. Applying grounding to Y, centering X/Z via feet.")
             
             else: # Z-Up (Blender, 3ds Max)
                 # Ground is X/Y plane, Up is Z
@@ -2030,17 +2087,18 @@ def retarget_animation(src_skel: Skeleton, tgt_skel: Skeleton, mapping: dict[str
                      t_floor = min(foot_zs) if foot_zs else 0.0
                 
                 ground_offset = np.array([0.0, 0.0, t_floor - (s_floor_z * scale)])
-                # Center X and Y (horizontal in Z-up)
-                h_offset = np.array([-t_pos_0[0], -t_pos_0[1], 0.0])
-                print(f"[Retarget] Axis System: Z-Up. Applying grounding to Z, centering X/Y.")
+                # Center X and Y (horizontal in Z-up) based on feet centroid
+                h_offset = np.array([-s_center_0[0], -s_center_0[1], 0.0])
+                print(f"[Retarget] Axis System: Z-Up. Applying grounding to Z, centering X/Y via feet.")
             
+            t_rest_pos = t_bone_main.world_matrix[3, :3]
             anchor_offset = ground_offset + h_offset
             
             if preserve_position:
                 anchor_offset[:] = 0.0
                 print(f"[Retarget] Preserving absolute world position (using sampler coordinates).")
             else:
-                print(f"[Retarget] Grounded root: Floor offset={ground_offset[1]:.2f}, Horizontal centering applied.")
+                print(f"[Retarget] Grounded root: Total offset={anchor_offset}, Floor offset={ground_offset[1] if t_up_axis[1]==1 else ground_offset[2]:.2f}")
             
             for f in frames:
                 s_pos_f = s_bone.world_location_animation.get(f, s_rest_pos)
@@ -2231,6 +2289,7 @@ def main():
     parser.add_argument('--scale', '-sc', type=float, default=0.0)
     parser.add_argument('--no-neutral', dest='neutral', action='store_false', help="Disable neutral finger rest-pose")
     parser.add_argument('--in-place', action='store_true', help="Lock horizontal movement")
+    parser.add_argument('--auto-stride', action='store_true', help="Scale movement to target proportions (Relative retargeting)")
     parser.set_defaults(neutral=True)
     args = parser.parse_args()
     
@@ -2256,7 +2315,14 @@ def main():
     
     mapping = load_bone_mapping(args.mapping, src_skel, tgt_skel)
     
-    rots, locs, active = retarget_animation(src_skel, tgt_skel, mapping, args.scale, args.yaw, args.neutral, args.in_place)
+    rots, locs, active = retarget_animation(
+        src_skel, tgt_skel, mapping, 
+        force_scale=args.scale, 
+        yaw_offset=args.yaw, 
+        neutral_fingers=args.neutral, 
+        in_place=args.in_place, 
+        auto_stride=args.auto_stride
+    )
     
     print(f"\n[Retarget] Bone Mapping Results:\n  Total: {len(active)} bones mapped")
     if len(active) < 15:
