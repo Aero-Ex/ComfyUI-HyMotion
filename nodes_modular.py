@@ -2057,6 +2057,13 @@ class HYMotionRetargetFBX:
                 #     "default": True,
                 #     "tooltip": "If enabled, scales the character's stride to match their anatomical proportions (Proportional Retargeting). Helps fix 'drifting' or 'sliding' when retargeting to significantly taller/shorter characters."
                 # }),
+                "fps": ("FLOAT", {
+                    "default": 30.0, 
+                    "min": 1.0, 
+                    "max": 120.0, 
+                    "step": 0.1,
+                    "tooltip": "Frames per second for the retargeted animation. 30 FPS is standard."
+                }),
             }
         }
     
@@ -2069,7 +2076,7 @@ class HYMotionRetargetFBX:
     def retarget(self, motion_data, target_fbx, output_dir="hymotion_retarget", filename_prefix="retarget", 
                  mapping_file="", yaw_offset=0.0, scale=100.0, neutral_fingers=True, unique_names=True, 
                  in_place=False, in_place_x=False, in_place_y=False, in_place_z=False, preserve_position=False,
-                 auto_stride=True):
+                 auto_stride=True, fps=30.0):
         """Retarget motion to custom FBX skeleton."""
         
         # Resolve target FBX path robustly
@@ -2178,7 +2185,8 @@ class HYMotionRetargetFBX:
                     )
                     
                     # Apply and save
-                    src_time_mode = None # Default to 30 FPS
+                    import fbx
+                    src_time_mode = fbx.FbxTime().ConvertFrameRateToTimeMode(fps)
                     apply_retargeted_animation(
                         tgt_scene, tgt_skel, rots, locs, 
                         src_skel_loaded.frame_start, src_skel_loaded.frame_end, src_time_mode
