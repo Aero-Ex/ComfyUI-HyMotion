@@ -1295,14 +1295,74 @@ app.registerExtension({
                         dirLight.position.set(5, 10, 7.5);
                         scene.add(dirLight);
 
-                        const grid = new THREE.GridHelper(10, 10, 0x666666, 0x333333);
-                        scene.add(grid);
+                        // INFINITE GRID SHADER
+                        const gridVertexShader = `
+                            varying vec3 vWorldPosition;
+                            void main() {
+                                vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+                                vWorldPosition = worldPosition.xyz;
+                                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                            }
+                        `;
+
+                        const gridFragmentShader = `
+                            varying vec3 vWorldPosition;
+                            uniform float uSize1;
+                            uniform float uSize2;
+                            uniform vec3 uColor;
+                            uniform float uDistance;
+
+                            float grid(vec3 pos, float res) {
+                                vec2 coord = pos.xz / res;
+                                vec2 grid = abs(fract(coord - 0.5) - 0.5) / fwidth(coord);
+                                float line = min(grid.x, grid.y);
+                                return 1.0 - min(line, 1.0);
+                            }
+
+                            void main() {
+                                float g1 = grid(vWorldPosition, uSize1);
+                                float g2 = grid(vWorldPosition, uSize2);
+                                
+                                float dist = length(vWorldPosition.xz);
+                                float alpha = smoothstep(uDistance, 0.0, dist);
+                                
+                                // Primary grid (1m) is very subtle, Secondary (10m) is stronger
+                                float intensity = mix(0.1, 0.3, g2);
+                                gl_FragColor = vec4(uColor, (g1 + g2 * 2.0) * alpha * intensity);
+                                if (gl_FragColor.a < 0.01) discard;
+                            }
+                        `;
+
+                        const infiniteGridMat = new THREE.ShaderMaterial({
+                            transparent: true,
+                            side: THREE.DoubleSide,
+                            uniforms: {
+                                uSize1: { value: 1.0 },
+                                uSize2: { value: 10.0 },
+                                uColor: { value: new THREE.Color(0x888888) },
+                                uDistance: { value: 100.0 }
+                            },
+                            vertexShader: gridVertexShader,
+                            fragmentShader: gridFragmentShader,
+                            extensions: { derivatives: true }
+                        });
+
+                        const gridGeo = new THREE.PlaneGeometry(2000, 2000);
+                        const gridPlane = new THREE.Mesh(gridGeo, infiniteGridMat);
+                        gridPlane.rotation.x = -Math.PI / 2;
+                        gridPlane.position.y = -0.005; // Slightly below origin
+                        scene.add(gridPlane);
 
                         const originMarker = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 0.05), new THREE.MeshBasicMaterial({ color: 0xff0000 }));
                         scene.add(originMarker);
 
-                        const groundGeo = new THREE.PlaneGeometry(20, 20);
-                        const groundMat = new THREE.MeshStandardMaterial({ color: 0x0a0a0a });
+                        // Ground plane for shadowing/depth
+                        const groundGeo = new THREE.PlaneGeometry(2000, 2000);
+                        const groundMat = new THREE.MeshStandardMaterial({
+                            color: 0x080808,
+                            metalness: 0,
+                            roughness: 1
+                        });
                         const ground = new THREE.Mesh(groundGeo, groundMat);
                         ground.rotation.x = -Math.PI / 2;
                         ground.position.y = -0.01;
