@@ -1799,24 +1799,21 @@ def retarget_animation(src_skel: Skeleton, tgt_skel: Skeleton, mapping: dict[str
     anatomical_scale = tgt_h_cm / src_h_cm if src_h_cm > 0.01 else 1.0
     
     # Final numeric scale to apply to raw source coordinates to get target units
-    # Logic: TargetUnits = (SourceUnits * SourceScaleToCM) * AnatomicalScale / TargetScaleFromCM
-    # DRIFT FIX: When Auto-Scale (force_scale=0) is used, we enforce Absolute Motion Matching.
-    # We IGNORE anatomical scale for translation to ensure 1:1 physics (if source moves 1m, target moves 1m).
-    # This prevents "drifting" where a smaller character covers less distance than the source over time.
     if force_scale > 1e-4:
+        # Use manual scale (e.g. 100.0 to convert Meters to CM manually)
         scale = force_scale
-        print(f"[INFO] Using Forced Scale: {scale:.4f}")
+        print(f"[Retarget] Using Manual Base Scale: {scale:.4f}")
     else:
-        # Absolute Scaling: Just convert units (M -> CM usually)
-        # s_skel.unit_scale is usually 100 (M to CM)
-        # t_skel.unit_scale is usually 1.0 (CM to CM) or 100 (M to CM)
-        # Result: 100/1 = 100.0 (Scale meters to cm). 100/100 = 1.0 (Meters to Meters).
+        # Absolute Scaling: Automatic unit conversion (M -> CM usually)
         scale = src_skel.unit_scale / tgt_skel.unit_scale
-        if auto_stride:
-            scale *= anatomical_scale
-            print(f"[INFO] Auto-Scale (Proportional): {scale:.4f} (Anatomical Ratio {anatomical_scale:.4f} applied for matching stride)")
-        else:
-            print(f"[INFO] Auto-Scale (Absolute): {scale:.4f} (Anatomical Ratio {anatomical_scale:.4f} ignored for physics)")
+        print(f"[Retarget] Using Automatic Base Scale: {scale:.4f} ({'Meters to CM' if scale > 1.0 else 'CM/M matching'})")
+
+    if auto_stride:
+        # Proportional Retargeting: Scale movement by height ratio
+        scale *= anatomical_scale
+        print(f"[Retarget] Applying Auto-Stride: Final Scale {scale:.4f} (Anatomical Ratio {anatomical_scale:.4f})")
+    else:
+        print(f"[Retarget] Auto-Stride OFF: Using physical displacement.")
     
     print(f"[INFO] Height Check - Source: {src_h_cm:.2f}cm, Target: {tgt_h_cm:.2f}cm")
     print(f"[INFO] Final Retargeting Scale: {scale:.4f}")
@@ -1848,28 +1845,45 @@ def retarget_animation(src_skel: Skeleton, tgt_skel: Skeleton, mapping: dict[str
     # NEW: Unified robust search for alignment anchors and root bone
     t_lhip, t_rhip, t_spine = None, None, None
     s_lhip, s_rhip, s_spine = None, None, None
+    s_lfoot, s_rfoot, t_lfoot, t_rfoot = None, None, None, None
     root_bone_name = None
     s_root_bone = None
     
+    # SMPL-H / HyMotion Reference Bone Names
+    ROOT_S = ['pelvis']
+    LHIP_S = ['l_hip', 'leftupleg']
+    RHIP_S = ['r_hip', 'rightupleg']
+    SPINE_S = ['spine3', 'spine2', 'spine']
+    LFOOT_S = ['l_ankle', 'leftfoot', 'l_foot']
+    RFOOT_S = ['r_ankle', 'rightfoot', 'r_foot']
+
     for s_bone, t_bone_val, _ in active:
         t_bone = t_bone_val[0] if isinstance(t_bone_val, list) else t_bone_val
         if not t_bone: continue
         
         sb_name = s_bone.name.lower()
-        tb_name = t_bone.name.lower()
         
-        if sb_name == 'l_hip': 
-            s_lhip, t_lhip = s_bone, t_bone
-        elif sb_name == 'r_hip': 
-            s_rhip, t_rhip = s_bone, t_bone
-        elif sb_name in ['spine3', 'spine2', 'spine']:
-            if not s_spine or sb_name == 'spine3' or (sb_name == 'spine2' and s_spine.name.lower() == 'spine'):
-                s_spine, t_spine = s_bone, t_bone
-        
-        if not root_bone_name:
-            if any(x in tb_name or x in sb_name for x in ['pelvis', 'hips', 'root', 'center', 'cog']):
+        # 1. Root Detection (Based on mapping to 'Pelvis' or keywords)
+        if any(x == sb_name for x in ROOT_S) or any(x in t_bone.name.lower() for x in ['hips', 'pelvis', 'root']):
+            if not root_bone_name:
                 root_bone_name = t_bone.name
                 s_root_bone = s_bone
+                # Note: Do not print here yet to keep log clean until verified
+
+        # 2. Alignment Anchors
+        if any(x == sb_name for x in LHIP_S):
+            s_lhip, t_lhip = s_bone, t_bone
+        elif any(x == sb_name for x in RHIP_S):
+            s_rhip, t_rhip = s_bone, t_bone
+        elif sb_name in SPINE_S:
+            if not s_spine or sb_name == 'spine3' or (sb_name == 'spine2' and s_spine.name.lower() == 'spine'):
+                s_spine, t_spine = s_bone, t_bone
+
+        # 3. Grounding Anchors (Feet/Ankles)
+        if any(x == sb_name for x in LFOOT_S):
+            s_lfoot, t_lfoot = s_bone, t_bone
+        elif any(x == sb_name for x in RFOOT_S):
+            s_rfoot, t_rfoot = s_bone, t_bone
 
     if s_lhip and s_rhip and t_lhip and t_rhip:
         # Construct Source Frame
@@ -1906,6 +1920,18 @@ def retarget_animation(src_skel: Skeleton, tgt_skel: Skeleton, mapping: dict[str
     yaw_q = R.from_euler('y' if t_up_axis[1] == 1 else 'z', yaw_offset, degrees=True)
     global_transform_q = yaw_q * realignment_tgt_q * coord_q
     
+    # TRAJECTORY DRIFT FIX: Use ONLY Yaw for trajectory translation.
+    # If the misalignment matrix has a pitch or roll (due to rig posture differences), 
+    # applying it to the position vector causes "climbing" or "sinking" into the ground.
+    # We extract the yaw heading only for movement.
+    fwd_transformed = global_transform_q.apply([0, 0, 1] if t_up_axis[1] == 1 else [0, 1, 0])
+    if t_up_axis[1] == 1:
+        angle = np.arctan2(fwd_transformed[0], fwd_transformed[2])
+        global_pos_q = R.from_euler('y', angle)
+    else:
+        angle = np.arctan2(fwd_transformed[0], fwd_transformed[1])
+        global_pos_q = R.from_euler('z', angle)
+        
     gt_q = global_transform_q.as_quat()
     gt_q_np = np.array([gt_q[3], gt_q[0], gt_q[1], gt_q[2]]) 
     # 3. Pass 1: Standard Retargeting for all bones
@@ -2006,8 +2032,7 @@ def retarget_animation(src_skel: Skeleton, tgt_skel: Skeleton, mapping: dict[str
 
 
     # 5. Displacement and Local Rotations
-    root_bone = tgt_skel.get_bone_case_insensitive('pelvis') or tgt_skel.get_bone_case_insensitive('hips') or tgt_skel.get_bone_case_insensitive('root')
-    root_bone_name = root_bone.name if root_bone else ""
+    # root_bone_name is already correctly detected from mapping/keywords above.
     print(f"[Retarget] Identified Target Root for Translation: {root_bone_name}")
 
     for s_bone, t_bone_val, _ in active:
@@ -2016,31 +2041,33 @@ def retarget_animation(src_skel: Skeleton, tgt_skel: Skeleton, mapping: dict[str
         t_bone_main = t_bone_list[0]
         
         # Robust root name check
-        is_root = (t_bone_main.name == root_bone_name) or (t_bone_main.name.lower().split(':')[-1] in ['hips', 'pelvis', 'root'])
+        is_root = (t_bone_main.name == root_bone_name)
         
         if is_root:
             ret_locs[t_bone_main.name] = {}
             
             # GROUNDING FIX: Calculate floor levels for proper vertical alignment
-            # Detect Source Foot Floor (if available)
+            # Detect Source Foot Floor (if available) - use mapping if found, else fallback
             s_floor = 0.0
-            s_lfoot = src_skel.get_bone_case_insensitive('L_Ankle') or src_skel.get_bone_case_insensitive('l_foot')
-            s_rfoot = src_skel.get_bone_case_insensitive('R_Ankle') or src_skel.get_bone_case_insensitive('r_foot')
-            if s_lfoot or s_rfoot:
+            cur_s_lfoot = s_lfoot or src_skel.get_bone_case_insensitive('L_Ankle')
+            cur_s_rfoot = s_rfoot or src_skel.get_bone_case_insensitive('R_Ankle')
+            
+            if cur_s_lfoot or cur_s_rfoot:
                 s_foot_ys = []
-                if s_lfoot: s_foot_ys.append(s_lfoot.head[1])
-                if s_rfoot: s_foot_ys.append(s_rfoot.head[1])
+                if cur_s_lfoot: s_foot_ys.append(cur_s_lfoot.head[1])
+                if cur_s_rfoot: s_foot_ys.append(cur_s_rfoot.head[1])
                 s_floor = min(s_foot_ys) if s_foot_ys else 0.0
                 print(f"[Retarget] Source Ground Level: {s_floor:.2f}")
 
-            # Target floor: Minimum foot Y coordinate (handles rigs centered at hips)
+            # Target floor: Minimum foot Y coordinate
             t_floor = 0.0
-            t_lfoot = tgt_skel.get_bone_case_insensitive('leftfoot') or tgt_skel.get_bone_case_insensitive('l_foot')
-            t_rfoot = tgt_skel.get_bone_case_insensitive('rightfoot') or tgt_skel.get_bone_case_insensitive('r_foot')
-            if t_lfoot or t_rfoot:
+            cur_t_lfoot = t_lfoot or tgt_skel.get_bone_case_insensitive('leftfoot')
+            cur_t_rfoot = t_rfoot or tgt_skel.get_bone_case_insensitive('rightfoot')
+            
+            if cur_t_lfoot or cur_t_rfoot:
                 foot_ys = []
-                if t_lfoot: foot_ys.append(t_lfoot.head[1])
-                if t_rfoot: foot_ys.append(t_rfoot.head[1])
+                if cur_t_lfoot: foot_ys.append(cur_t_lfoot.head[1])
+                if cur_t_rfoot: foot_ys.append(cur_t_rfoot.head[1])
                 t_floor = min(foot_ys) if foot_ys else 0.0
                 print(f"[Retarget] Target Ground Level: {t_floor:.2f}")
             
@@ -2051,7 +2078,7 @@ def retarget_animation(src_skel: Skeleton, tgt_skel: Skeleton, mapping: dict[str
             
             # FOOT-BASED SYNC: Detect horizontal center of feet at frame 0
             foot_pos_0 = []
-            for sf in [s_lfoot, s_rfoot]:
+            for sf in [cur_s_lfoot, cur_s_rfoot]:
                 if sf:
                     p = sf.world_location_animation.get(frames[0], sf.head)
                     foot_pos_0.append(global_transform_q.apply(p * scale))
@@ -2102,7 +2129,10 @@ def retarget_animation(src_skel: Skeleton, tgt_skel: Skeleton, mapping: dict[str
             
             for f in frames:
                 s_pos_f = s_bone.world_location_animation.get(f, s_rest_pos)
-                t_pos_f = global_transform_q.apply(s_pos_f * scale) + anchor_offset
+                
+                # Apply trajectory rotation (Yaw-only) to position components.
+                # This ensures forward movement stays parallel to the floor.
+                t_pos_f = global_pos_q.apply(s_pos_f * scale) + anchor_offset
                 
                 # Lock movement based on granular toggles or the legacy in_place flag
                 # Note: These values are in Target Space (t_pos_f)
