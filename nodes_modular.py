@@ -19,7 +19,10 @@ from torchdiffeq import odeint
 from .hymotion.utils.loaders import load_object
 from .hymotion.network.text_encoders.text_encoder import HYTextModel
 from .hymotion.pipeline.motion_diffusion import length_to_mask, randn_tensor, MotionGeneration
-from .hymotion.utils.geometry import rot6d_to_rotation_matrix, rotation_matrix_to_rot6d, axis_angle_to_matrix
+from .hymotion.utils.geometry import (
+    rot6d_to_rotation_matrix, rotation_matrix_to_rot6d, axis_angle_to_matrix,
+    get_yaw_matrix, rotate_6d, rotate_transl
+)
 from .hymotion.pipeline.body_model import WoodenMesh, construct_smpl_data_dict
 from .hymotion.utils.downloader import download_file, get_model_path, MODEL_METADATA
 from .hymotion.utils.data_types import HYMotionData, HYMotionTextEmbeds, HYMotionFrame
@@ -875,20 +878,17 @@ class HYMotionSampler:
         # Prepare conditioned latents if provided
         first_latent = None
         last_latent = None
+        local_first_frame = None # LSG localized version
+        local_last_frame = None # LSG localized version
         root_offset = torch.zeros((1, 3), device=dit_model.device)
+        # Root rotation offset for Local Space Generation (LSG)
+        root_rotation_offset = torch.eye(3, device=dit_model.device).unsqueeze(0) # [1, 3, 3]
         
         # Motion Chaining: If motion_data is provided and first_frame is not,
         # automatically extract the last frame of the input motion.
         if motion_data is not None and first_frame is None:
             print("[HY-Motion] Motion chaining detected: Extracting last frame from input motion_data")
-            # motion_data is a Dict[str, Any] wrapping HYMotionData
-            # We need to get the HYMotionData object or its output_dict
-            # In ComfyUI, if it's a custom type, it might be the object itself or a dict.
-            # Based on Node 3.5 (HYMotionExtractFrame), it returns a HYMotionData object.
-            
-            # Let's assume motion_data is the HYMotionData object (or has output_dict)
             try:
-                # If it's a dict from another node
                 m_data = motion_data.get("motion_data") if isinstance(motion_data, dict) else motion_data
                 output_dict = m_data.output_dict
                 m_rot6d = output_dict["rot6d"] # [B, L, J, 6]
@@ -902,11 +902,7 @@ class HYMotionSampler:
                 )
                 print(f"[HY-Motion] Successfully extracted frame {last_idx} for chaining.")
             except Exception as e:
-                try:
-                    first_frame = HYMotionFrame(rot6d=m_rot6d[:, -1, :22].cpu(), transl=m_transl[:, -1].cpu())
-                    print(f"[HY-Motion] Extracted last frame for chaining (forced 22 joints fallback)")
-                except Exception as e2:
-                    print(f"[HY-Motion] WARNING: Failed to extract last frame for chaining: {e2}")
+                print(f"[HY-Motion] WARNING: Failed to extract last frame for chaining: {e}")
 
         # UNIFIED JOINT TRUNCATION: Ensure all reference frames are 22 joints for the Sampler
         orig_first_frame = first_frame
@@ -951,25 +947,46 @@ class HYMotionSampler:
                     return norm
 
                 if first_frame is not None:
-                    # Extract root offset from first frame (HORIZONTAL ONLY)
-                    # We only want to shift X and Z. We must preserve Y (height) so the AI 
-                    # doesn't "jump" from the floor to its natural height.
+                    # LOCAL SPACE GENERATION (LSG): Rotate to face forward (+Z)
+                    # 1. Extract Yaw from root joint (idx 0)
+                    root_rot_mat = rot6d_to_rotation_matrix(first_frame.rot6d[..., 0, :].to(dit_model.device))
+                    root_rotation_offset = get_yaw_matrix(root_rot_mat) # [1, 3, 3]
+                    inv_rot_offset = root_rotation_offset.transpose(-1, -2)
+                    
+                    # 2. Extract Translation Offset (Horizontal Only)
                     root_offset = first_frame.transl.clone().to(dit_model.device)
                     root_offset[..., 1] = 0 # Zero out Y in the offset
                     
-                    # Create a relative version for conditioning (preserves Y)
+                    # 3. Create Localized Pose for conditioning
+                    # Rotate root translation (relative) and root rotation (6D) to face forward
+                    local_root_rot6d = rotate_6d(first_frame.rot6d[..., 0, :].to(dit_model.device), inv_rot_offset)
+                    
+                    localized_rot6d = first_frame.rot6d.clone().to(dit_model.device)
+                    localized_rot6d[..., 0, :] = local_root_rot6d
+                    
+                    local_transl = rotate_transl((first_frame.transl.to(dit_model.device) - root_offset), inv_rot_offset)
+                    
                     local_first_frame = HYMotionFrame(
-                        rot6d=first_frame.rot6d,
-                        transl=(first_frame.transl.to(dit_model.device) - root_offset).cpu()
+                        rot6d=localized_rot6d.cpu(),
+                        transl=local_transl.cpu()
                     )
                     first_latent = normalize_frame(local_first_frame)
+                    print(f"[HY-Motion] LSG: Extracted Yaw Offset for forward-facing generation.")
                     print(f"[HY-Motion] Horizontal root offset extracted: {root_offset.cpu().numpy()}")
                 
                 if last_frame is not None:
-                    # For last frame, we make it relative to the first frame's offset
+                    # For last frame, we de-rotate by the SAME offset as the first frame
+                    inv_rot_offset = root_rotation_offset.transpose(-1, -2)
+                    
+                    local_root_rot6d = rotate_6d(last_frame.rot6d[..., 0, :].to(dit_model.device), inv_rot_offset)
+                    localized_rot6d = last_frame.rot6d.clone().to(dit_model.device)
+                    localized_rot6d[..., 0, :] = local_root_rot6d
+                    
+                    local_transl = rotate_transl((last_frame.transl.to(dit_model.device) - root_offset), inv_rot_offset)
+                    
                     local_last_frame = HYMotionFrame(
-                        rot6d=last_frame.rot6d,
-                        transl=(last_frame.transl.to(dit_model.device) - root_offset).cpu()
+                        rot6d=localized_rot6d.cpu(),
+                        transl=local_transl.cpu()
                     )
                     last_latent = normalize_frame(local_last_frame)
             else:
@@ -1003,19 +1020,40 @@ class HYMotionSampler:
                 print(f"[HY-Motion] Denoise enabled: starting ODE at t={t_start:.4f} with First->Last interpolation")
             elif latent is not None:
                 # Direct latent injection (e.g. from Encoder or Refinement)
-                # latent shape: [B, T, 201]
-                # We need to resize it to match train_frames if needed
                 l_in = latent.clone().to(dit_model.device)
+                
+                # LOCAL SPACE GENERATION (LSG): Localize momentum history if rotation offset exists
+                if first_frame is not None:
+                    # Extract translation (0:3) and root rotation (3:9)
+                    # Note: Localizing normalized latents is imperfect, but better than nothing.
+                    # For velocity calculation in ode_fn, it helps.
+                    inv_rot_offset = root_rotation_offset.transpose(-1, -2)
+                    
+                    # We only localize the translation delta's orientation
+                    # and the root rotation's orientation.
+                    # Since it's normalized, we should ideally denormalize, rotate, renormalize.
+                    if dit_model.mean is not None and dit_model.std is not None:
+                        m = dit_model.mean.to(dit_model.device)
+                        s = dit_model.std.to(dit_model.device)
+                        # Root translation is 0:3, Root rotation is 3:9
+                        raw_transl = l_in[..., :3] * s[:3] + m[:3]
+                        raw_rot6d = l_in[..., 3:9] * s[3:9] + m[3:9]
+                        
+                        # Localize Translation: Shift to origin (horizontal), then rotate
+                        # This ensures the momentum guidance 'delta' is in the correct local space.
+                        loc_transl = rotate_transl((raw_transl - root_offset.unsqueeze(1)), inv_rot_offset)
+                        loc_rot6d = rotate_6d(raw_rot6d, inv_rot_offset)
+                        
+                        # Renormalize
+                        l_in[..., :3] = (loc_transl - m[:3]) / s[:3]
+                        l_in[..., 3:9] = (loc_rot6d - m[3:9]) / s[3:9]
+                
                 if l_in.shape[1] != train_frames:
-                     # Simple nearest resize for now if lengths mismatch
                      l_in = F.interpolate(l_in.transpose(1, 2), size=train_frames, mode='nearest').transpose(1, 2)
                      print(f"[HY-Motion] Warning: Resized input latent from {latent.shape[1]} to {train_frames} frames")
                 
-                # Check for normalization stats mismatch
-                # Assumes input latent is already normalized (which it is, from Encoder node)
-                
                 y0 = (1.0 - t_start) * y0 + t_start * l_in
-                print(f"[HY-Motion] Denoise enabled: starting ODE at t={t_start:.4f} using provided LATENT")
+                print(f"[HY-Motion] Denoise enabled: starting ODE at t={t_start:.4f} using provided LATENT (LSG: Localized)")
             elif first_latent is not None:
                 y0 = (1.0 - t_start) * y0 + t_start * first_latent.unsqueeze(1)
                 print(f"[HY-Motion] Denoise enabled: starting ODE at t={t_start:.4f} using first_frame as base")
@@ -1264,13 +1302,25 @@ class HYMotionSampler:
         # is added back at the very end of the sample method.
         if first_frame is not None:
             print("[HY-Motion] Hard-Pinning: Forcing Frame 0 to match first_frame exactly (Relative)")
-            transl[:, 0, :] = (first_frame.transl.to(transl) - root_offset.to(transl))
-            rot6d[:, 0, :, :] = first_frame.rot6d.to(rot6d)
+            if local_first_frame is not None:
+                # LSG mode: pinning target is already localized
+                transl[:, 0, :] = local_first_frame.transl.to(transl)
+                rot6d[:, 0, :, :] = local_first_frame.rot6d.to(rot6d)
+            else:
+                # Standard mode: pinning target is global
+                transl[:, 0, :] = (first_frame.transl.to(transl) - root_offset.to(transl))
+                rot6d[:, 0, :, :] = first_frame.rot6d.to(rot6d)
             
         if last_frame is not None:
             print("[HY-Motion] Hard-Pinning: Forcing Final Frame to match last_frame exactly (Relative)")
-            transl[:, -1, :] = (last_frame.transl.to(transl) - root_offset.to(transl))
-            rot6d[:, -1, :, :] = last_frame.rot6d.to(rot6d)
+            if local_last_frame is not None:
+                # LSG mode
+                transl[:, -1, :] = local_last_frame.transl.to(transl)
+                rot6d[:, -1, :, :] = local_last_frame.rot6d.to(rot6d)
+            else:
+                # Standard mode
+                transl[:, -1, :] = (last_frame.transl.to(transl) - root_offset.to(transl))
+                rot6d[:, -1, :, :] = last_frame.rot6d.to(rot6d)
         
         # Apply motion smoothing (matching official logic) unless skip_smoothing is enabled
         if skip_smoothing:
@@ -1372,6 +1422,18 @@ class HYMotionSampler:
         # Convert rot6d to rotation matrices
         rot_mat = rot6d_to_rotation_matrix(rot6d_smooth.reshape(-1, 6)).reshape(B, L, num_joints, 3, 3)
         
+        # LOCAL SPACE GENERATION (LSG): GLOBALIZATION
+        # Rotate the entire sequence back to the world orientation
+        if first_frame is not None and not force_origin:
+             print(f"[HY-Motion] LSG: Globalizing output ({L} frames) by rotating back to original yaw.")
+             # Rotate Root Rotation (joint 0)
+             rot_mat[:, :, 0] = torch.matmul(root_rotation_offset.unsqueeze(1), rot_mat[:, :, 0])
+             rot6d_smooth[:, :, 0] = rotation_matrix_to_rot6d(rot_mat[:, :, 0])
+             
+             # Rotate Translation
+             # We rotate in local space, then shift to global offset later
+             transl_smooth = rotate_transl(transl_smooth, root_rotation_offset.unsqueeze(1))
+        
         # Prepare values for output_dict
         # Final translation calculation:
         # We align the entire sequence so it starts EXACTLY at the world_target height/pos.
@@ -1413,9 +1475,16 @@ class HYMotionSampler:
                 p_v = p_trans[0, -1].cpu().numpy()
                 o_v = transl_cpu[0, 0].cpu().numpy()
                 dist = np.linalg.norm(p_v - o_v)
+                
+                # Rotation check
+                p_r = p_rot6d[0, -1, 0, :].cpu()
+                o_r = rot6d_cpu[0, 0, 0, :].cpu()
+                r_dist = torch.norm(p_r - o_r).item()
+                
                 print(f"  - Translation Connection: DISTANCE={dist:.6f}")
-                if dist > 1e-4:
-                    print(f"    [WARNING] Translation discontinuity detected ({p_v} -> {o_v})")
+                print(f"  - Rotation Connection (Root): DISTANCE={r_dist:.6f}")
+                if dist > 1e-4 or r_dist > 1e-4:
+                    print(f"    [WARNING] Segment discontinuity detected!")
 
                 # Match batch sizes if needed
                 if p_rot6d.shape[0] != rot6d_cpu.shape[0]:
