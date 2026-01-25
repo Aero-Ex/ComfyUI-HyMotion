@@ -4,6 +4,48 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import Tensor
+import math
+
+def get_yaw_matrix(matrix: Tensor) -> Tensor:
+    """
+    Extracts the yaw-only (rotation around Y) rotation matrix from a 3x3 matrix.
+    Assumes Y is the vertical axis.
+    """
+    # Forward vector in SMPL space is usually Z+ or similar.
+    # We look at the projection of the local Z axis onto the global XZ plane.
+    # r02 is z-component of local X, r12 is z-component of local Y, r22 is z-component of local Z
+    # Wait, convention: matrix[:, 0] is local X, matrix[:, 1] is local Y, matrix[:, 2] is local Z
+    
+    # Let's use the local-Z-axis-projected-to-XZ method
+    z_axis = matrix[..., :, 2] # [..., 3]
+    yaw = torch.atan2(z_axis[..., 0], z_axis[..., 2])
+    
+    cos_y = torch.cos(yaw)
+    sin_y = torch.sin(yaw)
+    zero = torch.zeros_like(yaw)
+    one = torch.ones_like(yaw)
+    
+    # Rotation matrix around Y
+    # [ cos  0  sin]
+    # [  0   1   0 ]
+    # [-sin  0  cos]
+    row1 = torch.stack([cos_y, zero, sin_y], dim=-1)
+    row2 = torch.stack([zero, one, zero], dim=-1)
+    row3 = torch.stack([-sin_y, zero, cos_y], dim=-1)
+    
+    return torch.stack([row1, row2, row3], dim=-2)
+
+def rotate_6d(d6: Tensor, rot_mat: Tensor) -> Tensor:
+    """Rotates a 6D rotation vector by a rotation matrix."""
+    # Convert to matrix, multiply, convert back
+    # Use model-native rot6d_to_rotation_matrix (column-based)
+    m = rot6d_to_rotation_matrix(d6)
+    m_rot = torch.matmul(rot_mat, m)
+    return rotation_matrix_to_rot6d(m_rot)
+
+def rotate_transl(transl: Tensor, rot_mat: Tensor) -> Tensor:
+    """Rotates a translation vector [..., 3] by a rotation matrix [..., 3, 3]."""
+    return torch.matmul(rot_mat, transl.unsqueeze(-1)).squeeze(-1)
 
 
 def rotation_6d_to_matrix(d6: Tensor) -> Tensor:
