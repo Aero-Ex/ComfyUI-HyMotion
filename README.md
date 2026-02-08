@@ -6,6 +6,7 @@
 <p align="center">
   <a href="https://www.python.org/downloads/"><img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11+-blue.svg"></a>
   <a href="https://github.com/comfyanonymous/ComfyUI"><img alt="ComfyUI" src="https://img.shields.io/badge/ComfyUI-compatible-green.svg"></a>
+  <a href="https://discord.gg/r5KYNbxV"><img alt="Discord" src="https://img.shields.io/badge/Discord-Join%20Server-7289DA.svg?logo=discord&logoColor=white"></a>
 </p>
 
 A full-featured ComfyUI implementation of **HY-MOTION 1.0**, enabling high-fidelity human motion generation from text prompts. This node pack provides a complete pipeline from text description to rigged FBX animation, with real-time 3D preview capabilities and robust retargeting to custom skeletons.
