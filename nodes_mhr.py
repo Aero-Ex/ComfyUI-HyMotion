@@ -26,8 +26,8 @@ class HYMotionMHRLoader:
             }
         }
     
-    RETURN_TYPES = ("MHR_DATA",)
-    RETURN_NAMES = ("mhr_data",)
+    RETURN_TYPES = ("MHR_PARAMS",)
+    RETURN_NAMES = ("mhr_params",)
     FUNCTION = "load"
     CATEGORY = "HY-Motion/loaders"
 
@@ -54,7 +54,7 @@ class HYMotionMHRConverter:
     def INPUT_TYPES(s):
         return {
             "required": {
-                "mhr_data": ("MHR_DATA",),
+                "mhr_params": ("MHR_PARAMS",),
                 "fit_hands": ("BOOLEAN", {"default": True}),
                 "flip_orientation": ("BOOLEAN", {"default": True}),
                 "device": (["cuda", "cpu"], {"default": "cuda"}),
@@ -65,7 +65,7 @@ class HYMotionMHRConverter:
     FUNCTION = "convert"
     CATEGORY = "HY-Motion/converters"
 
-    def convert(self, mhr_data, fit_hands, flip_orientation, device):
+    def convert(self, mhr_params, fit_hands, flip_orientation, device):
         device_obj = torch.device(device)
         
         # 0. Set up paths relative to extension
@@ -76,8 +76,17 @@ class HYMotionMHRConverter:
 
         # 1. Prepare MHR vertices
         print(f"[HY-Motion] Processing MHR data...")
-        vertices = torch.from_numpy(mhr_data['vertices']).float().to(device_obj)
-        cam_t = torch.from_numpy(mhr_data['cam_t']).float().to(device_obj)
+        vertices = mhr_params['vertices']
+        cam_t = mhr_params['cam_t']
+        
+        # Handle both numpy (from loader) and torch (from live node)
+        if isinstance(vertices, np.ndarray):
+            vertices = torch.from_numpy(vertices)
+        if isinstance(cam_t, np.ndarray):
+            cam_t = torch.from_numpy(cam_t)
+            
+        vertices = vertices.float().to(device_obj)
+        cam_t = cam_t.float().to(device_obj)
         
         flip_vec = torch.tensor([1, -1, -1] if flip_orientation else [1, 1, 1], device=device_obj).float()
         source_vertices = (vertices + cam_t[:, None, :]) * flip_vec
