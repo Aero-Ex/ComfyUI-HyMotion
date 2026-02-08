@@ -22,6 +22,7 @@ A full-featured ComfyUI implementation of **HY-MOTION 1.0**, enabling high-fidel
 | **📝 Prompt Enhancement** | AI-powered prompt rewriting with automatic duration estimation using Text2MotionPrompter |
 | **💾 Multiple Export Formats** | Export to FBX (with skeleton & textures) or NPZ (raw SMPL-H data) |
 | **🎮 SMPL Integration** | Convert motion capture data (GVHMR/MotionCapture output) to HY-Motion format for retargeting |
+| **🏎️ MHR GPU Converter** | Ultra-fast GPU-accelerated MHR-to-HyMotion conversion with finger fitting and auto-alignment |
 | **⚡ GGUF Support** | Memory-efficient text encoding with quantized Qwen3 models via ComfyUI-GGUF |
 
 ---
@@ -102,6 +103,13 @@ Download and place in `ComfyUI/models/text_encoders/`:
 | **HY-Motion Retarget to FBX** | Transfer SMPL-H motion to custom skeletons with robust bone mapping |
 | **HY-Motion SMPL to Data** | Convert SMPL parameters from motion capture to HY-Motion format |
 
+### MHR Conversion Nodes (`HY-Motion/loaders`, `HY-Motion/converters`)
+
+| Node | Purpose | Inputs | Outputs |
+|------|---------|--------|---------|
+| **HY-Motion MHR Loader** | Load MHR vertex data from NPZ files | MHR NPZ name | `MHR_DATA` |
+| **HY-Motion MHR Converter (GPU)** | Ultra-fast GPU-accelerated conversion with opt-in finger fitting | MHR Data, fit_hands, flip_orientation | `HYMOTION_DATA` |
+
 ---
 
 ## 📋 Workflows
@@ -154,5 +162,10 @@ Contributions are welcome! Please feel free to submit issues and pull requests.
 
 ## 📜 Credits
 
-This project is based on the [HyMotion](https://github.com/Tencent-Hunyuan/HY-Motion-1.0) research.  
+This project is based on the following research and implementations:
+
+- [HY-Motion](https://github.com/Tencent-Hunyuan/HY-Motion-1.0) - High-fidelity human motion generation.
+- [MHR (Mesh-based Human Reconstruction)](https://github.com/facebookresearch/MHR) - High-fidelity mesh reconstruction from video (the basis for our GPU conversion pipeline).
+- [SMPL-X](https://github.com/vchoutas/smplx) - Expressive body model.
+
 **ComfyUI implementation by [Aero-Ex](https://github.com/Aero-Ex).**

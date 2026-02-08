@@ -1,7 +1,7 @@
 [project]
 name = "ComfyUI-HyMotion"
 description = "A ComfyUI plugin based on HY-Motion 1.0 for text-to-3D human motion generation."
-version = "0.1.5"
+version = "1.0.0"
 license = "MIT"
 dynamic = ["dependencies"]
 readme = "README.md"
@@ -17,4 +17,3 @@ Repository = "https://github.com/Aero-Ex/ComfyUI-HyMotion"
 PublisherId = "aerox"
 DisplayName = "HyMotion"
 Icon = ""
-
