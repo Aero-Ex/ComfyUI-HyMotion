@@ -2133,6 +2133,7 @@ class HYMotionRetargetFBX:
                     "step": 0.1,
                     "tooltip": "Frames per second for the retargeted animation. 30 FPS is standard."
                 }),
+                "target_pose_type": (["T-Pose", "A-Pose"], {"default": "T-Pose"}),
             }
         }
     
@@ -2143,10 +2144,14 @@ class HYMotionRetargetFBX:
     OUTPUT_NODE = True
     
     def retarget(self, motion_data, target_fbx, output_dir="hymotion_retarget", filename_prefix="retarget", 
-                 mapping_file="", yaw_offset=0.0, scale=100.0, neutral_fingers=True, unique_names=True, 
+                 mapping_file="", yaw_offset=0.0, neutral_fingers=True, unique_names=True, 
                  in_place=False, in_place_x=False, in_place_y=False, in_place_z=False, preserve_position=False,
-                 auto_stride=True, fps=30.0):
+                 fps=30.0, target_pose_type="T-Pose"):
         """Retarget motion to custom FBX skeleton."""
+        
+        # Internal defaults for commented out UI parameters
+        scale = 0.0 # 0.0 = auto-scale (recommended)
+        auto_stride = True
         
         # Resolve target FBX path robustly
         resolved_path = None
@@ -2250,7 +2255,8 @@ class HYMotionRetargetFBX:
                         in_place_y=in_place_y, 
                         in_place_z=in_place_z, 
                         preserve_position=preserve_position,
-                        auto_stride=auto_stride
+                        auto_stride=auto_stride,
+                        smart_arm_align=(target_pose_type == "A-Pose")
                     )
                     
                     # Apply and save

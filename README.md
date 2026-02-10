@@ -51,8 +51,8 @@ Download and place in `ComfyUI/models/hymotion/`:
 
 | Model | Size | Description | Download |
 |-------|------|-------------|----------|
-| **HY-Motion-1.0** | ~2GB | Full quality model | [📥 latest.ckpt](https://huggingface.co/Aero-Ex/Hy-Motion1.0/resolve/main/hymotion/HY-Motion-1.0/latest.ckpt) |
-| **HY-Motion-1.0-Lite** | ~800MB | Faster, lower VRAM | [📥 latest.ckpt](https://huggingface.co/Aero-Ex/Hy-Motion1.0/resolve/main/hymotion/HY-Motion-1.0-Lite/latest.ckpt) |
+| **HY-Motion-1.0** | ~4.5GB | Full quality model | [📥 latest.ckpt](https://huggingface.co/Aero-Ex/Hy-Motion1.0/resolve/main/hymotion/HY-Motion-1.0/latest.ckpt) |
+| **HY-Motion-1.0-Lite** | ~1.5GB | Faster, lower VRAM | [📥 latest.ckpt](https://huggingface.co/Aero-Ex/Hy-Motion1.0/resolve/main/hymotion/HY-Motion-1.0-Lite/latest.ckpt) |
 
 **Directory structure:**
 ```
@@ -123,9 +123,10 @@ Sample workflows are included in the `workflows/` directory:
 
 ## ⚙️ Technical Details
 
-### Robust Retargeting
-The retargeting engine has been significantly improved to support a wide range of skeletons:
-- **UE5 Support**: Dedicated mapping for Unreal Engine 5 Mannequin skeletons.
+### Advanced Character Support
+The retargeting engine in v1.0.2 has been updated for other structures:
+- **Daz Genesis 9 (G9)**: support for G9 bone structures.
+- **Unreal Engine 5 (Manny)**: support for UE5(Manny) bone structures.
 - **UniRig/ArticulationXL**: Built-in support for UniRig-detected skeletons.
 - **Canonical T-Pose**: Automatic rest-pose normalization for stable retargeting from NPZ sources.
 - **Geometric Fallbacks**: Intelligent bone matching based on relative hierarchy and position when name matching fails.
