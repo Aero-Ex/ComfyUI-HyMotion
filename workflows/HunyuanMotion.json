@@ -1,8 +1,8 @@
 {
   "id": "34ecfec2-d283-4065-9255-a435f62c41fa",
   "revision": 0,
-  "last_node_id": 131,
-  "last_link_id": 117,
+  "last_node_id": 137,
+  "last_link_id": 119,
   "nodes": [
     {
       "id": 55,
@@ -52,7 +52,7 @@
         475.6388854980469
       ],
       "flags": {},
-      "order": 18,
+      "order": 17,
       "mode": 4,
       "inputs": [
         {
@@ -85,7 +85,7 @@
         78
       ],
       "flags": {},
-      "order": 15,
+      "order": 13,
       "mode": 4,
       "inputs": [
         {
@@ -212,48 +212,6 @@
       "shape": 4
     },
     {
-      "id": 5,
-      "type": "HYMotionTextEncode",
-      "pos": [
-        -130.65240958241486,
-        -2422.8593688587844
-      ],
-      "size": [
-        400,
-        205
-      ],
-      "flags": {},
-      "order": 8,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "text_encoder",
-          "type": "HYMOTION_TEXT_ENCODER",
-          "link": 1
-        }
-      ],
-      "outputs": [
-        {
-          "name": "text_embeds",
-          "type": "HYMOTION_TEXT_EMBEDS",
-          "links": [
-            101
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "ComfyUI-HY-Motion1",
-        "ver": "a588e907c22100ab0a14b83fef27ca42965914f3",
-        "Node name for S&R": "HYMotionTextEncode",
-        "aux_id": "Aero-Ex/ComfyUI-HyMotion"
-      },
-      "widgets_values": [
-        "person proceeds to equip the weapon"
-      ],
-      "color": "#009933",
-      "shape": 4
-    },
-    {
       "id": 46,
       "type": "HYMotionModularExportFBX",
       "pos": [
@@ -265,7 +223,7 @@
         326.999994913737
       ],
       "flags": {},
-      "order": 13,
+      "order": 15,
       "mode": 0,
       "inputs": [
         {
@@ -309,46 +267,6 @@
       "shape": 4
     },
     {
-      "id": 41,
-      "type": "HYMotionSaveNPZ",
-      "pos": [
-        1193.2818935178702,
-        -2796.450140516224
-      ],
-      "size": [
-        270,
-        82
-      ],
-      "flags": {},
-      "order": 12,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "motion_data",
-          "type": "HYMOTION_DATA",
-          "link": 102
-        }
-      ],
-      "outputs": [
-        {
-          "name": "npz_paths",
-          "type": "STRING",
-          "links": null
-        }
-      ],
-      "properties": {
-        "cnr_id": "ComfyUI-HyMotion",
-        "ver": "b19a9ff52e0a2855b46dc7fcae23e38cb41edae7",
-        "Node name for S&R": "HYMotionSaveNPZ",
-        "aux_id": "Aero-Ex/ComfyUI-HyMotion"
-      },
-      "widgets_values": [
-        "hymotion_npz",
-        "motiondata"
-      ],
-      "shape": 4
-    },
-    {
       "id": 37,
       "type": "MarkdownNote",
       "pos": [
@@ -384,7 +302,7 @@
         140.9999974568685
       ],
       "flags": {},
-      "order": 7,
+      "order": 8,
       "mode": 4,
       "inputs": [
         {
@@ -406,330 +324,6 @@
       ]
     },
     {
-      "id": 100,
-      "type": "HYMotionSliceAndEncode",
-      "pos": [
-        186.0539227243646,
-        -2782.7779296453054
-      ],
-      "size": [
-        325.5277760823568,
-        150
-      ],
-      "flags": {},
-      "order": 9,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "motion_data",
-          "type": "HYMOTION_DATA",
-          "link": 93
-        },
-        {
-          "name": "dit_model",
-          "shape": 7,
-          "type": "HYMOTION_DIT",
-          "link": 94
-        }
-      ],
-      "outputs": [
-        {
-          "name": "latent",
-          "type": "LATENT",
-          "links": []
-        },
-        {
-          "name": "sliced_motion_data",
-          "type": "HYMOTION_DATA",
-          "links": [
-            105
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "ComfyUI-HyMotion",
-        "ver": "e2c8bcf21403f1e74595f082374842552479fa71",
-        "Node name for S&R": "HYMotionSliceAndEncode"
-      },
-      "widgets_values": [
-        0,
-        30,
-        "from_end",
-        "sliced encoded motion"
-      ],
-      "shape": 4
-    },
-    {
-      "id": 4,
-      "type": "HYMotionTextEncoderLoader",
-      "pos": [
-        -128.06191957545468,
-        -2577.644718447888
-      ],
-      "size": [
-        360.2361043294271,
-        106
-      ],
-      "flags": {},
-      "order": 3,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "text_encoder",
-          "type": "HYMOTION_TEXT_ENCODER",
-          "links": [
-            1
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "ComfyUI-HY-Motion1",
-        "ver": "a588e907c22100ab0a14b83fef27ca42965914f3",
-        "Node name for S&R": "HYMotionTextEncoderLoader",
-        "aux_id": "Aero-Ex/ComfyUI-HyMotion"
-      },
-      "widgets_values": [
-        "clip-vit-large-patch14.safetensors",
-        "Qwen3-8B_fp8.safetensors",
-        "cpu"
-      ],
-      "color": "#009933",
-      "shape": 4
-    },
-    {
-      "id": 128,
-      "type": "Note",
-      "pos": [
-        122.01035110299672,
-        -1433.7501546772353
-      ],
-      "size": [
-        210,
-        109.48620588702556
-      ],
-      "flags": {},
-      "order": 4,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [],
-      "properties": {},
-      "widgets_values": [
-        "Use Shortkey ALT+Z and ALT+Y\n\nfor undo and redo "
-      ],
-      "color": "#432",
-      "bgcolor": "#653"
-    },
-    {
-      "id": 71,
-      "type": "HYMotionLoadNPZ",
-      "pos": [
-        143.84622330339357,
-        -2939.953257749725
-      ],
-      "size": [
-        439.2778015136719,
-        58
-      ],
-      "flags": {},
-      "order": 5,
-      "mode": 4,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "motion_data",
-          "type": "HYMOTION_DATA",
-          "links": [
-            93
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "ComfyUI-HyMotion",
-        "ver": "a7dd59cf3c960745d2da49ae58eb4c80c417e882",
-        "Node name for S&R": "HYMotionLoadNPZ"
-      },
-      "widgets_values": [
-        "wakingfromdie_20260123_182552595_c2e073c9_000.npz"
-      ],
-      "shape": 4
-    },
-    {
-      "id": 106,
-      "type": "HYMotionFBXPlayer",
-      "pos": [
-        1724.4773798747733,
-        -2939.9834388666545
-      ],
-      "size": [
-        839.0694681803386,
-        578.0972290039062
-      ],
-      "flags": {},
-      "order": 16,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "fbx_path",
-          "shape": 7,
-          "type": "STRING",
-          "widget": {
-            "name": "fbx_path"
-          },
-          "link": 111
-        }
-      ],
-      "outputs": [
-        {
-          "name": "fbx_path",
-          "type": "STRING",
-          "links": null
-        }
-      ],
-      "properties": {
-        "cnr_id": "comfyui-hymotion",
-        "ver": "0.0.4",
-        "Node name for S&R": "HYMotionFBXPlayer"
-      },
-      "widgets_values": [
-        "none",
-        "",
-        ""
-      ],
-      "shape": 4
-    },
-    {
-      "id": 101,
-      "type": "HYMotionSampler",
-      "pos": [
-        649.5869197719373,
-        -2756.5312829951986
-      ],
-      "size": [
-        321.1111195882162,
-        642
-      ],
-      "flags": {},
-      "order": 10,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "dit_model",
-          "type": "HYMOTION_DIT",
-          "link": 98
-        },
-        {
-          "name": "text_embeds",
-          "type": "HYMOTION_TEXT_EMBEDS",
-          "link": 101
-        },
-        {
-          "name": "motion_data",
-          "shape": 7,
-          "type": "HYMOTION_DATA",
-          "link": null
-        },
-        {
-          "name": "first_frame",
-          "shape": 7,
-          "type": "HYMOTION_FRAME",
-          "link": null
-        },
-        {
-          "name": "latent",
-          "shape": 7,
-          "type": "LATENT",
-          "link": null
-        }
-      ],
-      "outputs": [
-        {
-          "name": "motion_data",
-          "type": "HYMOTION_DATA",
-          "links": [
-            102,
-            103,
-            115
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "ComfyUI-HyMotion",
-        "ver": "e2c8bcf21403f1e74595f082374842552479fa71",
-        "Node name for S&R": "HYMotionSampler"
-      },
-      "widgets_values": [
-        3,
-        71244679828265,
-        "randomize",
-        5,
-        1,
-        50,
-        false,
-        1,
-        true,
-        "euler",
-        0.0001,
-        0.0001,
-        true,
-        0,
-        false,
-        64,
-        1,
-        15,
-        1,
-        21,
-        false,
-        0.7
-      ],
-      "shape": 4
-    },
-    {
-      "id": 47,
-      "type": "HYMotionFBXPlayer",
-      "pos": [
-        1723.218782590507,
-        -2282.8769181730986
-      ],
-      "size": [
-        834.7083536783855,
-        633.7083435058594
-      ],
-      "flags": {},
-      "order": 17,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "fbx_path",
-          "shape": 7,
-          "type": "STRING",
-          "widget": {
-            "name": "fbx_path"
-          },
-          "link": 114
-        }
-      ],
-      "outputs": [
-        {
-          "name": "fbx_path",
-          "type": "STRING",
-          "links": null
-        }
-      ],
-      "properties": {
-        "cnr_id": "ComfyUI-HyMotion",
-        "ver": "73f00bfa51cb6cceaf470b519f26cf082edc23d6",
-        "Node name for S&R": "HYMotionFBXPlayer",
-        "aux_id": "Aero-Ex/ComfyUI-HyMotion"
-      },
-      "widgets_values": [
-        "none",
-        "",
-        ""
-      ],
-      "shape": 4
-    },
-    {
       "id": 111,
       "type": "HYMotion3DModelLoader",
       "pos": [
@@ -741,7 +335,7 @@
         742.1666463216146
       ],
       "flags": {},
-      "order": 6,
+      "order": 3,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -787,10 +381,10 @@
       ],
       "size": [
         345.7361094156901,
-        366
+        390
       ],
       "flags": {},
-      "order": 14,
+      "order": 16,
       "mode": 0,
       "inputs": [
         {
@@ -839,9 +433,442 @@
         false,
         false,
         false,
-        30
+        30,
+        "T-Pose"
       ],
       "shape": 4
+    },
+    {
+      "id": 41,
+      "type": "HYMotionSaveNPZ",
+      "pos": [
+        1193.2818935178702,
+        -2796.450140516224
+      ],
+      "size": [
+        270,
+        82
+      ],
+      "flags": {},
+      "order": 14,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "motion_data",
+          "type": "HYMOTION_DATA",
+          "link": 102
+        }
+      ],
+      "outputs": [
+        {
+          "name": "npz_paths",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "ComfyUI-HyMotion",
+        "ver": "b19a9ff52e0a2855b46dc7fcae23e38cb41edae7",
+        "Node name for S&R": "HYMotionSaveNPZ",
+        "aux_id": "Aero-Ex/ComfyUI-HyMotion"
+      },
+      "widgets_values": [
+        "hymotion_npz",
+        "runandsit"
+      ],
+      "shape": 4
+    },
+    {
+      "id": 100,
+      "type": "HYMotionSliceAndEncode",
+      "pos": [
+        186.0539227243646,
+        -2782.7779296453054
+      ],
+      "size": [
+        325.5277760823568,
+        150
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "motion_data",
+          "type": "HYMOTION_DATA",
+          "link": 93
+        },
+        {
+          "name": "dit_model",
+          "shape": 7,
+          "type": "HYMOTION_DIT",
+          "link": 94
+        }
+      ],
+      "outputs": [
+        {
+          "name": "latent",
+          "type": "LATENT",
+          "links": [
+            118
+          ]
+        },
+        {
+          "name": "sliced_motion_data",
+          "type": "HYMOTION_DATA",
+          "links": [
+            105
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "ComfyUI-HyMotion",
+        "ver": "e2c8bcf21403f1e74595f082374842552479fa71",
+        "Node name for S&R": "HYMotionSliceAndEncode"
+      },
+      "widgets_values": [
+        0,
+        30,
+        "from_end",
+        "sliced encoded motion"
+      ],
+      "shape": 4
+    },
+    {
+      "id": 47,
+      "type": "HYMotionFBXPlayer",
+      "pos": [
+        1723.218782590507,
+        -2282.8769181730986
+      ],
+      "size": [
+        834.7083536783855,
+        633.7083435058594
+      ],
+      "flags": {},
+      "order": 19,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "fbx_path",
+          "shape": 7,
+          "type": "STRING",
+          "widget": {
+            "name": "fbx_path"
+          },
+          "link": 114
+        }
+      ],
+      "outputs": [
+        {
+          "name": "fbx_path",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "ComfyUI-HyMotion",
+        "ver": "73f00bfa51cb6cceaf470b519f26cf082edc23d6",
+        "Node name for S&R": "HYMotionFBXPlayer",
+        "aux_id": "Aero-Ex/ComfyUI-HyMotion"
+      },
+      "widgets_values": [
+        "none",
+        "",
+        ""
+      ],
+      "shape": 4
+    },
+    {
+      "id": 5,
+      "type": "HYMotionTextEncode",
+      "pos": [
+        -130.65240958241486,
+        -2422.8593688587844
+      ],
+      "size": [
+        400,
+        205
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "text_encoder",
+          "type": "HYMOTION_TEXT_ENCODER",
+          "link": 1
+        }
+      ],
+      "outputs": [
+        {
+          "name": "text_embeds",
+          "type": "HYMOTION_TEXT_EMBEDS",
+          "links": [
+            101
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "ComfyUI-HY-Motion1",
+        "ver": "a588e907c22100ab0a14b83fef27ca42965914f3",
+        "Node name for S&R": "HYMotionTextEncode",
+        "aux_id": "Aero-Ex/ComfyUI-HyMotion"
+      },
+      "widgets_values": [
+        "A person is  in right right sitting  position he sttands up"
+      ],
+      "color": "#009933",
+      "shape": 4
+    },
+    {
+      "id": 71,
+      "type": "HYMotionLoadNPZ",
+      "pos": [
+        143.84622330339357,
+        -2939.953257749725
+      ],
+      "size": [
+        492.3517573275067,
+        66.16522397135941
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "motion_data",
+          "type": "HYMOTION_DATA",
+          "links": [
+            93,
+            119
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "ComfyUI-HyMotion",
+        "ver": "a7dd59cf3c960745d2da49ae58eb4c80c417e882",
+        "Node name for S&R": "HYMotionLoadNPZ"
+      },
+      "widgets_values": [
+        "runandsit_20260125_160930016_3b2df986_000.npz"
+      ],
+      "shape": 4
+    },
+    {
+      "id": 4,
+      "type": "HYMotionTextEncoderLoader",
+      "pos": [
+        -166.30126048815615,
+        -2592.2656429145086
+      ],
+      "size": [
+        360.2361043294271,
+        106
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "text_encoder",
+          "type": "HYMOTION_TEXT_ENCODER",
+          "links": [
+            1
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "ComfyUI-HY-Motion1",
+        "ver": "a588e907c22100ab0a14b83fef27ca42965914f3",
+        "Node name for S&R": "HYMotionTextEncoderLoader",
+        "aux_id": "Aero-Ex/ComfyUI-HyMotion"
+      },
+      "widgets_values": [
+        "clip-vit-large-patch14.safetensors",
+        "Qwen3-8B_fp8.safetensors",
+        "cpu"
+      ],
+      "color": "#009933",
+      "shape": 4
+    },
+    {
+      "id": 106,
+      "type": "HYMotionFBXPlayer",
+      "pos": [
+        1724.4773798747733,
+        -2939.9834388666545
+      ],
+      "size": [
+        839.0694681803386,
+        578.0972290039062
+      ],
+      "flags": {},
+      "order": 18,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "fbx_path",
+          "shape": 7,
+          "type": "STRING",
+          "widget": {
+            "name": "fbx_path"
+          },
+          "link": 111
+        }
+      ],
+      "outputs": [
+        {
+          "name": "fbx_path",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-hymotion",
+        "ver": "0.0.4",
+        "Node name for S&R": "HYMotionFBXPlayer"
+      },
+      "widgets_values": [
+        "hymotion_fbx/originalone_20260125_160930094_803bad97_000.fbx",
+        "",
+        ""
+      ],
+      "shape": 4
+    },
+    {
+      "id": 101,
+      "type": "HYMotionSampler",
+      "pos": [
+        702.44718515126,
+        -2806.0174888822226
+      ],
+      "size": [
+        321.1111195882162,
+        642
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "dit_model",
+          "type": "HYMOTION_DIT",
+          "link": 98
+        },
+        {
+          "name": "text_embeds",
+          "type": "HYMOTION_TEXT_EMBEDS",
+          "link": 101
+        },
+        {
+          "name": "motion_data",
+          "shape": 7,
+          "type": "HYMOTION_DATA",
+          "link": 119
+        },
+        {
+          "name": "first_frame",
+          "shape": 7,
+          "type": "HYMOTION_FRAME",
+          "link": null
+        },
+        {
+          "name": "latent",
+          "shape": 7,
+          "type": "LATENT",
+          "link": 118
+        }
+      ],
+      "outputs": [
+        {
+          "name": "motion_data",
+          "type": "HYMOTION_DATA",
+          "links": [
+            102,
+            103,
+            115
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "ComfyUI-HyMotion",
+        "ver": "e2c8bcf21403f1e74595f082374842552479fa71",
+        "Node name for S&R": "HYMotionSampler"
+      },
+      "widgets_values": [
+        3,
+        671367137356984,
+        "randomize",
+        5,
+        1,
+        50,
+        false,
+        1,
+        true,
+        "euler",
+        0.0001,
+        0.0001,
+        true,
+        0,
+        false,
+        64,
+        1,
+        15,
+        1,
+        21,
+        false,
+        1.1
+      ],
+      "shape": 4
+    },
+    {
+      "id": 137,
+      "type": "Note",
+      "pos": [
+        42.1463666270664,
+        -1439.6639173219128
+      ],
+      "size": [
+        210,
+        109.48620588702556
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "Use Shortkey ALT+Z and ALT+Y\n\nfor undo and redo "
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 136,
+      "type": "Note",
+      "pos": [
+        11.86728569907018,
+        -1282.7051947578668
+      ],
+      "size": [
+        233.71747331927554,
+        112.23596873533438
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "Optimal Daz Workflow: For best results, first import your Daz character into Blender then export it from Blender as an FBX file. This ensures all bone orientations are normalized and provides the highest quality retargeting"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
     }
   ],
   "links": [
@@ -964,20 +991,40 @@
       108,
       1,
       "STRING"
+    ],
+    [
+      118,
+      100,
+      0,
+      101,
+      4,
+      "LATENT"
+    ],
+    [
+      119,
+      71,
+      0,
+      101,
+      2,
+      "HYMOTION_DATA"
     ]
   ],
   "groups": [],
   "config": {},
   "extra": {
     "ds": {
-      "scale": 0.7348236889821943,
+      "scale": 0.6680215354383586,
       "offset": [
-        -198.55010228052453,
-        2871.360863166282
+        286.12834437367087,
+        2921.127574335749
       ]
     },
     "workflowRendererVersion": "LG",
-    "frontendVersion": "1.36.14"
+    "frontendVersion": "1.36.14",
+    "VHS_latentpreview": false,
+    "VHS_latentpreviewrate": 0,
+    "VHS_MetadataImage": true,
+    "VHS_KeepIntermediate": true
   },
   "version": 0.4
 }

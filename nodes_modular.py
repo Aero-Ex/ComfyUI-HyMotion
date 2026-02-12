@@ -2241,7 +2241,7 @@ class HYMotionRetargetFBX:
                     
                     # Load skeletons (src_skel from dict, tgt from FBX)
                     src_skel_loaded = load_npz(data_dict)
-                    tgt_man, tgt_scene, tgt_skel = load_fbx(target_fbx)
+                    tgt_man, tgt_scene, tgt_skel = load_fbx(target_fbx, use_bind_pose=False)
                     
                     # Perform retargeting
                     mapping = load_bone_mapping(mapping_file, src_skel_loaded, tgt_skel)

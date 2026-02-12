@@ -18,7 +18,7 @@ A full-featured ComfyUI implementation of **HY-MOTION 1.0**, enabling high-fidel
 | Feature | Description |
 |---------|-------------|
 | **🎬 Text-to-Motion** | Generate realistic human animations from natural language descriptions using DiT (Diffusion Transformer) architecture |
-| **🔄 Robust Retargeting** | Transfer SMPL-H motions to custom skeletons (Mixamo, UE5, UniRig) with intelligent fuzzy mapping, canonical T-pose support, and geometric fallbacks |
+| **🔄 Robust Retargeting** | Transfer SMPL-H motions to custom skeletons (Mixamo, DAZ(G3 and G9) UE5, UniRig) with intelligent fuzzy mapping, canonical T-pose support, and geometric fallbacks |
 | **🖼️ Interactive 3D Viewer** | Real-time Three.js preview with transform gizmos (G/R/S keys), resizable viewport, and smooth sub-frame interpolation |
 | **📝 Prompt Enhancement** | AI-powered prompt rewriting with automatic duration estimation using Text2MotionPrompter |
 | **💾 Multiple Export Formats** | Export to FBX (with skeleton & textures) or NPZ (raw SMPL-H data) |
@@ -124,13 +124,18 @@ Sample workflows are included in the `workflows/` directory:
 ## ⚙️ Technical Details
 
 ### Advanced Character Support
-The retargeting engine in v1.0.2 has been updated for other structures:
-- **Daz Genesis 9 (G9)**: support for G9 bone structures.
-- **Unreal Engine 5 (Manny)**: support for UE5(Manny) bone structures.
+
+The retargeting engine in v1.0.3 has been updated for professional production workflows with a focus on stability and ease of use:
+
+- **Daz Genesis G3 & G9 Support**: Explicitly tuned for Daz characters.
+  - > [!IMPORTANT]
+  - > **Optimal Daz Workflow**: For best results, first import your Daz character into Blender then export it from Blender as an FBX file. This ensures all bone orientations are normalized and provides the highest quality retargeting.
+- **Automatic Rig Normalization**: Automatically detects Daz G3/G8/G9 rigs and cleans up complex FBX Pre/Post rotations, preventing the "exploding bone" distortions common in raw exports.
+- **UE5 Manny IK Snapping**: Automatically snaps `ik_foot` and `ik_hand` bones to their biological counterparts using a recursive FK solver, ensuring full compatibility with the UE5 Mannequin standard.
 - **UniRig/ArticulationXL**: Built-in support for UniRig-detected skeletons.
-- **Canonical T-Pose**: Automatic rest-pose normalization for stable retargeting from NPZ sources.
-- **Geometric Fallbacks**: Intelligent bone matching based on relative hierarchy and position when name matching fails.
-- **In-Place Support**: Option to lock horizontal movement for game-ready animations.
+- **Canonical T-Pose**: Intelligent rest-pose detection for stable retargeting from SMPL-H (NPZ) sources.
+- **Geometric Fallbacks**: Advanced bone matching using hierarchy analysis and relative position when names do not match.
+- **In-Place Support**: Lock root motion for horizontal axes to create clean game-ready loopable animations.
 
 ### Requirements
 - Python 3.11+
