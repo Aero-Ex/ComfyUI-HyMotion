@@ -1,6 +1,3 @@
---extra-index-url https://gitlab.inria.fr/api/v4/projects/18692/packages/pypi/simple
-fbxsdkpy==2020.1.post2
-
 torchdiffeq>=0.2.5
 transforms3d>=0.4.2
 omegaconf>=2.3.0
@@ -14,4 +11,5 @@ numpy
 tqdm
 hf-xet
 opencv-python>=4.8.0
+
 regex; sys_platform == 'win32'
