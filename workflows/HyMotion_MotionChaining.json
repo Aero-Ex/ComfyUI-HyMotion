@@ -1,7 +1,7 @@
 {
   "id": "892cb82b-51af-4ea9-b0da-3ce2ff60183b",
   "revision": 0,
-  "last_node_id": 34,
+  "last_node_id": 35,
   "last_link_id": 35,
   "nodes": [
     {
@@ -16,7 +16,7 @@
         326.999994913737
       ],
       "flags": {},
-      "order": 9,
+      "order": 10,
       "mode": 0,
       "inputs": [
         {
@@ -71,7 +71,7 @@
         82
       ],
       "flags": {},
-      "order": 10,
+      "order": 11,
       "mode": 0,
       "inputs": [
         {
@@ -100,274 +100,6 @@
       "shape": 4
     },
     {
-      "id": 8,
-      "type": "Note",
-      "pos": [
-        2067.5356275286936,
-        -1101.121529043284
-      ],
-      "size": [
-        210,
-        109.48620588702556
-      ],
-      "flags": {},
-      "order": 0,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [],
-      "properties": {},
-      "widgets_values": [
-        "Use Shortkey ALT+Z and ALT+Y\n\nfor undo and redo "
-      ],
-      "color": "#432",
-      "bgcolor": "#653"
-    },
-    {
-      "id": 12,
-      "type": "HYMotion3DModelLoader",
-      "pos": [
-        2265.292373710932,
-        -1371.1789304895356
-      ],
-      "size": [
-        734.9028015136719,
-        742.1666463216146
-      ],
-      "flags": {},
-      "order": 1,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "model_path",
-          "type": "STRING",
-          "links": [
-            10
-          ]
-        },
-        {
-          "name": "motion_data",
-          "type": "HYMOTION_DATA",
-          "links": null
-        }
-      ],
-      "properties": {
-        "cnr_id": "ComfyUI-HyMotion",
-        "ver": "c1168e2342208aafd69cc60d4e93d34c93ce3fc9",
-        "Node name for S&R": "HYMotion3DModelLoader"
-      },
-      "widgets_values": [
-        "input/animation_characters/mixamo.fbx",
-        0,
-        0.08629601961137412,
-        0,
-        0,
-        0,
-        0,
-        1,
-        1,
-        1,
-        ""
-      ],
-      "shape": 4
-    },
-    {
-      "id": 13,
-      "type": "HYMotionRetargetFBX",
-      "pos": [
-        3086.7131506467545,
-        -1860.372902351172
-      ],
-      "size": [
-        345.7361094156901,
-        366
-      ],
-      "flags": {},
-      "order": 11,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "motion_data",
-          "type": "HYMOTION_DATA",
-          "link": 9
-        },
-        {
-          "name": "target_fbx",
-          "type": "STRING",
-          "widget": {
-            "name": "target_fbx"
-          },
-          "link": 10
-        }
-      ],
-      "outputs": [
-        {
-          "name": "fbx_path",
-          "type": "STRING",
-          "links": [
-            14
-          ]
-        },
-        {
-          "name": "fbx",
-          "type": "FBX",
-          "links": null
-        }
-      ],
-      "properties": {
-        "cnr_id": "ComfyUI-HyMotion",
-        "ver": "c1168e2342208aafd69cc60d4e93d34c93ce3fc9",
-        "Node name for S&R": "HYMotionRetargetFBX"
-      },
-      "widgets_values": [
-        "",
-        "hymotion_retarget",
-        "sourceone",
-        "",
-        0,
-        100,
-        true,
-        false,
-        false,
-        false,
-        false,
-        false,
-        30
-      ],
-      "shape": 4
-    },
-    {
-      "id": 16,
-      "type": "HYMotionFBXPlayer",
-      "pos": [
-        3668.744059016204,
-        -1950.2482925391473
-      ],
-      "size": [
-        834.7083536783855,
-        633.7083435058594
-      ],
-      "flags": {},
-      "order": 13,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "fbx_path",
-          "shape": 7,
-          "type": "STRING",
-          "widget": {
-            "name": "fbx_path"
-          },
-          "link": 14
-        }
-      ],
-      "outputs": [
-        {
-          "name": "fbx_path",
-          "type": "STRING",
-          "links": null
-        }
-      ],
-      "properties": {
-        "cnr_id": "ComfyUI-HyMotion",
-        "ver": "73f00bfa51cb6cceaf470b519f26cf082edc23d6",
-        "Node name for S&R": "HYMotionFBXPlayer",
-        "aux_id": "Aero-Ex/ComfyUI-HyMotion"
-      },
-      "widgets_values": [
-        "none",
-        "",
-        ""
-      ],
-      "shape": 4
-    },
-    {
-      "id": 11,
-      "type": "HYMotionSampler",
-      "pos": [
-        2642.124091790308,
-        -2553.803947814687
-      ],
-      "size": [
-        321.1111195882162,
-        642
-      ],
-      "flags": {},
-      "order": 8,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "dit_model",
-          "type": "HYMOTION_DIT",
-          "link": 7
-        },
-        {
-          "name": "text_embeds",
-          "type": "HYMOTION_TEXT_EMBEDS",
-          "link": 34
-        },
-        {
-          "name": "motion_data",
-          "shape": 7,
-          "type": "HYMOTION_DATA",
-          "link": 31
-        },
-        {
-          "name": "first_frame",
-          "shape": 7,
-          "type": "HYMOTION_FRAME",
-          "link": null
-        },
-        {
-          "name": "latent",
-          "shape": 7,
-          "type": "LATENT",
-          "link": 32
-        }
-      ],
-      "outputs": [
-        {
-          "name": "motion_data",
-          "type": "HYMOTION_DATA",
-          "links": [
-            4,
-            5,
-            9
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "ComfyUI-HyMotion",
-        "ver": "e2c8bcf21403f1e74595f082374842552479fa71",
-        "Node name for S&R": "HYMotionSampler"
-      },
-      "widgets_values": [
-        3,
-        254519577001146,
-        "randomize",
-        5,
-        1,
-        50,
-        false,
-        1,
-        true,
-        "euler",
-        0.0001,
-        0.0001,
-        true,
-        0,
-        false,
-        64,
-        1,
-        15,
-        1,
-        21,
-        false,
-        0.7
-      ],
-      "shape": 4
-    },
-    {
       "id": 4,
       "type": "HYMotionDiTLoader",
       "pos": [
@@ -379,7 +111,7 @@
         82
       ],
       "flags": {},
-      "order": 2,
+      "order": 0,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -418,7 +150,7 @@
         150
       ],
       "flags": {},
-      "order": 7,
+      "order": 8,
       "mode": 0,
       "inputs": [
         {
@@ -472,7 +204,7 @@
         106
       ],
       "flags": {},
-      "order": 3,
+      "order": 1,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -511,7 +243,7 @@
         205
       ],
       "flags": {},
-      "order": 4,
+      "order": 5,
       "mode": 0,
       "inputs": [
         {
@@ -553,7 +285,7 @@
         205
       ],
       "flags": {},
-      "order": 5,
+      "order": 6,
       "mode": 0,
       "inputs": [
         {
@@ -595,7 +327,7 @@
         642
       ],
       "flags": {},
-      "order": 6,
+      "order": 7,
       "mode": 0,
       "inputs": [
         {
@@ -644,8 +376,94 @@
       },
       "widgets_values": [
         3,
-        75782681619612,
-        "randomize",
+        610185805484627,
+        "fixed",
+        5,
+        1,
+        50,
+        false,
+        1,
+        true,
+        "euler",
+        0.0001,
+        0.0001,
+        true,
+        0,
+        false,
+        64,
+        1,
+        15,
+        1,
+        21,
+        false,
+        0.7
+      ],
+      "shape": 4
+    },
+    {
+      "id": 11,
+      "type": "HYMotionSampler",
+      "pos": [
+        2642.124091790308,
+        -2553.803947814687
+      ],
+      "size": [
+        321.1111195882162,
+        642
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "dit_model",
+          "type": "HYMOTION_DIT",
+          "link": 7
+        },
+        {
+          "name": "text_embeds",
+          "type": "HYMOTION_TEXT_EMBEDS",
+          "link": 34
+        },
+        {
+          "name": "motion_data",
+          "shape": 7,
+          "type": "HYMOTION_DATA",
+          "link": 31
+        },
+        {
+          "name": "first_frame",
+          "shape": 7,
+          "type": "HYMOTION_FRAME",
+          "link": null
+        },
+        {
+          "name": "latent",
+          "shape": 7,
+          "type": "LATENT",
+          "link": 32
+        }
+      ],
+      "outputs": [
+        {
+          "name": "motion_data",
+          "type": "HYMOTION_DATA",
+          "links": [
+            4,
+            5,
+            9
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "ComfyUI-HyMotion",
+        "ver": "e2c8bcf21403f1e74595f082374842552479fa71",
+        "Node name for S&R": "HYMotionSampler"
+      },
+      "widgets_values": [
+        3,
+        904105890844709,
+        "fixed",
         5,
         1,
         50,
@@ -680,7 +498,7 @@
         578.0972290039062
       ],
       "flags": {},
-      "order": 12,
+      "order": 13,
       "mode": 0,
       "inputs": [
         {
@@ -704,6 +522,212 @@
         "cnr_id": "comfyui-hymotion",
         "ver": "0.0.4",
         "Node name for S&R": "HYMotionFBXPlayer"
+      },
+      "widgets_values": [
+        "none",
+        "",
+        ""
+      ],
+      "shape": 4
+    },
+    {
+      "id": 8,
+      "type": "Note",
+      "pos": [
+        2100.3828337510886,
+        -1435.7389993537518
+      ],
+      "size": [
+        210,
+        109.48620588702556
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "Use Shortkey ALT+Z and ALT+Y\n\nfor undo and redo "
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 35,
+      "type": "Note",
+      "pos": [
+        2080.8858713108725,
+        -1282.6841472766612
+      ],
+      "size": [
+        253.14387645674424,
+        150.0663327398786
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "Optimal Daz Workflow: For best results, first import your Daz character into Blender then export it from Blender as an FBX file. This ensures all bone orientations are normalized and provides the highest quality retargeting"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 12,
+      "type": "HYMotion3DModelLoader",
+      "pos": [
+        2363.0276303378073,
+        -1551.8035819771762
+      ],
+      "size": [
+        734.9028015136719,
+        742.1666463216146
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "model_path",
+          "type": "STRING",
+          "links": [
+            10
+          ]
+        },
+        {
+          "name": "motion_data",
+          "type": "HYMOTION_DATA",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "ComfyUI-HyMotion",
+        "ver": "c1168e2342208aafd69cc60d4e93d34c93ce3fc9",
+        "Node name for S&R": "HYMotion3DModelLoader"
+      },
+      "widgets_values": [
+        "input/quit.fbx",
+        0,
+        0.08629601961137412,
+        0,
+        0,
+        0,
+        0,
+        1,
+        1,
+        1,
+        ""
+      ],
+      "shape": 4
+    },
+    {
+      "id": 13,
+      "type": "HYMotionRetargetFBX",
+      "pos": [
+        3157.4784250652006,
+        -1890.3120569128223
+      ],
+      "size": [
+        345.7361094156901,
+        390
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "motion_data",
+          "type": "HYMOTION_DATA",
+          "link": 9
+        },
+        {
+          "name": "target_fbx",
+          "type": "STRING",
+          "widget": {
+            "name": "target_fbx"
+          },
+          "link": 10
+        }
+      ],
+      "outputs": [
+        {
+          "name": "fbx_path",
+          "type": "STRING",
+          "links": [
+            14
+          ]
+        },
+        {
+          "name": "fbx",
+          "type": "FBX",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "ComfyUI-HyMotion",
+        "ver": "c1168e2342208aafd69cc60d4e93d34c93ce3fc9",
+        "Node name for S&R": "HYMotionRetargetFBX"
+      },
+      "widgets_values": [
+        "",
+        "hymotion_retarget",
+        "sourceone",
+        "",
+        0,
+        100,
+        true,
+        false,
+        false,
+        false,
+        false,
+        false,
+        30,
+        "T-Pose"
+      ],
+      "shape": 4
+    },
+    {
+      "id": 16,
+      "type": "HYMotionFBXPlayer",
+      "pos": [
+        3668.744059016204,
+        -1950.2482925391473
+      ],
+      "size": [
+        834.7083536783855,
+        633.7083435058594
+      ],
+      "flags": {},
+      "order": 14,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "fbx_path",
+          "shape": 7,
+          "type": "STRING",
+          "widget": {
+            "name": "fbx_path"
+          },
+          "link": 14
+        }
+      ],
+      "outputs": [
+        {
+          "name": "fbx_path",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "ComfyUI-HyMotion",
+        "ver": "73f00bfa51cb6cceaf470b519f26cf082edc23d6",
+        "Node name for S&R": "HYMotionFBXPlayer",
+        "aux_id": "Aero-Ex/ComfyUI-HyMotion"
       },
       "widgets_values": [
         "none",
@@ -848,10 +872,10 @@
   "extra": {
     "workflowRendererVersion": "LG",
     "ds": {
-      "scale": 0.9780503300353011,
+      "scale": 0.5018944668958367,
       "offset": [
-        -2596.2849263611593,
-        2747.578621815919
+        -1021.5065571741388,
+        3076.0794872728325
       ]
     },
     "frontendVersion": "1.36.14",
