@@ -6,6 +6,8 @@ Provides nodes for:
 - Slicing motion data (tail-encoding for chaining)
 """
 
+import os
+import numpy as np
 import torch
 from typing import Optional, Dict, Any
 
@@ -262,15 +264,84 @@ class HYMotionSliceAndEncode:
         return (latent, sliced_data)
 
 
+class HYMotionNPZToSMPLParams:
+    """
+    Load an NPZ file and return its contents as SMPL_PARAMS.
+
+    Supports NPZ files from HY-Motion, GVHMR, and other SMPL-based pipelines.
+    The output can be wired directly into the 'SMPL to Data' node.
+    """
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "npz_path": ("STRING", {
+                    "default": "",
+                    "tooltip": "Absolute or relative path to an .npz file containing SMPL parameters."
+                }),
+            },
+        }
+
+    RETURN_TYPES = ("SMPL_PARAMS",)
+    RETURN_NAMES = ("smpl_params",)
+    FUNCTION = "load"
+    CATEGORY = "HY-Motion/utils"
+
+    def load(self, npz_path: str):
+        # Resolve path
+        path = npz_path.strip()
+        if not path:
+            raise ValueError("[HY-Motion] npz_path is empty.")
+
+        if not os.path.isabs(path):
+            # Try ComfyUI input/output directories
+            import folder_paths
+            for base in [
+                folder_paths.get_input_directory(),
+                folder_paths.get_output_directory(),
+            ]:
+                candidate = os.path.join(base, path)
+                if os.path.isfile(candidate):
+                    path = candidate
+                    break
+                # Also check hymotion_npz subfolder
+                candidate2 = os.path.join(base, "hymotion_npz", path)
+                if os.path.isfile(candidate2):
+                    path = candidate2
+                    break
+
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"[HY-Motion] NPZ file not found: {path}")
+
+        data = np.load(path, allow_pickle=True)
+        keys = list(data.keys())
+        print(f"[HY-Motion] NPZ to SMPL_PARAMS: loaded {path}")
+        print(f"[HY-Motion]   keys: {keys}")
+
+        smpl_params = {}
+        for key in keys:
+            val = data[key]
+            # numpy scalars / 0-d arrays -> python scalars
+            if isinstance(val, np.ndarray) and val.ndim == 0:
+                smpl_params[key] = val.item()
+            else:
+                smpl_params[key] = val
+
+        return (smpl_params,)
+
+
 # Node mappings for ComfyUI registration
 NODE_CLASS_MAPPINGS_EXTRA = {
     "HYMotionDecodeLatent": HYMotionDecodeLatent,
     "HYMotionDecomposeData": HYMotionDecomposeData,
     "HYMotionSliceAndEncode": HYMotionSliceAndEncode,
+    "HYMotionNPZToSMPLParams": HYMotionNPZToSMPLParams,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS_EXTRA = {
     "HYMotionDecodeLatent": "HY-Motion Decode Latent",
     "HYMotionDecomposeData": "HY-Motion Decompose Data",
     "HYMotionSliceAndEncode": "HY-Motion Slice & Encode (Chain)",
+    "HYMotionNPZToSMPLParams": "HY-Motion NPZ to SMPL_PARAMS",
 }

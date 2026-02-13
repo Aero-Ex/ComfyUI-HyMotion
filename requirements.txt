@@ -11,5 +11,6 @@ numpy
 tqdm
 hf-xet
 opencv-python>=4.8.0
+matplotlib
 
 regex; sys_platform == 'win32'
