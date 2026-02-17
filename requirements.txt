@@ -1,3 +1,15 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:75f1c209162f9592b90124d4d9574984d7372fef3bacc923d1d90f5c82bc1232
-size 263
+torchdiffeq>=0.2.5
+transforms3d>=0.4.2
+omegaconf>=2.3.0
+accelerate>=0.30.0
+huggingface_hub>=0.30.0
+bitsandbytes>=0.42.0
+safetensors>=0.4.0
+scipy>=1.10.0
+smplx>=0.1.28
+numpy
+tqdm
+hf-xet
+opencv-python>=4.8.0
+matplotlib
+regex; sys_platform == 'win32'

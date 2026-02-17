@@ -1,3 +1,8 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:c8d98ee5b867770fd4f43ad27d7bc5ad58655201822a75e2c4334acb408fe640
-size 561
+__all__ = [
+    "PROMPT_TEMPLATE_ENCODE_HUMAN_MOTION",
+]
+
+
+PROMPT_TEMPLATE_ENCODE_HUMAN_MOTION = """
+    Summarize human motion only from the user text for representation: action categories, key body-part movements, order/transitions, trajectory/direction, posture; include style/emotion/speed only if present. Explicitly capture laterality (left/right) when mentioned; do not guess. If multiple actions are described, indicate the count of distinct actions (e.g., actions=3) and their order. Do not invent missing info. Keep one concise paragraph.
+"""

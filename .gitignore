@@ -1,3 +1,32 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:50dc2c33fce9581108dfdc268373d3897706952afaae549d1162475bee35faec
-size 515
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+.vscode/
+.idea/
+*.log
+
+# Models and large assets
+models/
+hymotion/HY-Motion-1.0/
+hymotion/HY-Motion-1.0-Lite/
+models_configs/
+
+# Test outputs and temporary files
+*.fbx
+*.png
+!assets/*.png
+!web/**/*.png
+.ipynb_checkpoints/
+# ComfyUI specific
+/input/
+/output/
+/temp/
+
+# Avoid recursive ignores of code subdirectories
+# Only ignore text_encoders if it's in the root (where models might be)
+
+# assets/
+# workflows/*.json
+!workflows/example*.json

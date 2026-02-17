@@ -1,3 +1,22 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:f615f0d16d86c2e5766034dce4fc12347eabcc064ebd6aa0b18c65f218012d48
-size 535
+[project]
+name = "ComfyUI-HyMotion"
+description = "A ComfyUI plugin based on HY-Motion 1.0 for text-to-3D human motion generation with custom character support:UE5, MIXAMO, DAZ(G3,G9)."
+version = "1.0.8"
+license = "MIT"
+dynamic = ["dependencies"]
+readme = "README.md"
+requires-python = ">=3.9"
+
+[tool.setuptools.dynamic]
+dependencies = {file = "requirements.txt"}
+
+[project.urls]
+Repository = "https://github.com/Aero-Ex/ComfyUI-HyMotion"
+
+[tool.comfy]
+PublisherId = "aerox"
+DisplayName = "HyMotion"
+Icon = ""
+
+
+

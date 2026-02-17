@@ -1,3 +1,22 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:bdbad6d6ff4080dd9856083a6dbf871909236fa95abca6615659e64e401249a4
-size 578
+import torch
+from torch import nn
+
+
+def get_module_device(module: nn.Module) -> torch.device:
+    """Get the device of a module.
+
+    Args:
+        module (nn.Module): A module contains the parameters.
+
+    Returns:
+        torch.device: The device of the module.
+    """
+    try:
+        next(module.parameters())
+    except StopIteration:
+        raise ValueError("The input module should contain parameters.")
+
+    if next(module.parameters()).is_cuda:
+        return torch.device(next(module.parameters()).get_device())
+
+    return torch.device("cpu")
