@@ -20,6 +20,25 @@ def is_uv_available():
     except:
         return False
 
+def download_assets():
+    print("Downloading assets from Hugging Face...")
+    try:
+        from huggingface_hub import snapshot_download
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        
+        # Download the assets folder specifically
+        snapshot_download(
+            repo_id="Aero-Ex/Hy-Motion1.0",
+            allow_patterns=["assets/*"],
+            local_dir=current_dir,
+            local_dir_use_symlinks=False
+        )
+        print("Assets downloaded successfully.")
+    except ImportError:
+        print("Error: huggingface_hub not installed. Cannot download assets.")
+    except Exception as e:
+        print(f"Error downloading assets: {e}")
+
 def install():
     python_path = get_base_python_path()
     current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -44,7 +63,8 @@ def install():
     print(f"Installing {package_name}...")
     if run_command(fbx_cmd):
         print(f"Installing requirements from {requirements_path}...")
-        run_command(req_cmd)
+        if run_command(req_cmd):
+            download_assets()
     else:
         print(f"Failed to install {package_name}. Skipping remaining requirements.")
 

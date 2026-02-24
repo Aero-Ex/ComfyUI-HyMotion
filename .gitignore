@@ -11,8 +11,7 @@ __pycache__/
 models/
 hymotion/HY-Motion-1.0/
 hymotion/HY-Motion-1.0-Lite/
-models_configs/
-
+assets
 # Test outputs and temporary files
 *.fbx
 *.png
