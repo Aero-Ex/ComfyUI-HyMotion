@@ -45,7 +45,7 @@ def install():
     requirements_path = os.path.join(current_dir, "requirements.txt")
     
     extra_index_url = "https://gitlab.inria.fr/api/v4/projects/18692/packages/pypi/simple"
-    package_name = "fbxsdkpy==2020.1.post2"
+    package_name = "fbxsdkpy>=2020.1"
     
     use_uv = is_uv_available()
     
