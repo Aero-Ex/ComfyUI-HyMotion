@@ -17,14 +17,14 @@ A full-featured ComfyUI implementation of **HY-MOTION 1.0**, enabling high-fidel
 
 | Feature | Description |
 |---------|-------------|
-| **🎬 Text-to-Motion** | Generate realistic human animations from natural language descriptions using DiT (Diffusion Transformer) architecture |
-| **🔄 Robust Retargeting** | Transfer SMPL-H motions to custom skeletons (Mixamo, DAZ(G3 and G9) UE5, UniRig) with intelligent fuzzy mapping, canonical T-pose support, and geometric fallbacks |
-| **🖼️ Interactive 3D Viewer** | Real-time Three.js preview with transform gizmos (G/R/S keys), resizable viewport, and smooth sub-frame interpolation |
-| **📝 Prompt Enhancement** | AI-powered prompt rewriting with automatic duration estimation using Text2MotionPrompter |
-| **💾 Multiple Export Formats** | Export to FBX (with skeleton & textures) or NPZ (raw SMPL-H data) |
-| **🎮 SMPL Integration** | Convert motion capture data (GVHMR/MotionCapture output) to HY-Motion format for retargeting |
-| **🏎️ MHR GPU Converter** | Ultra-fast GPU-accelerated MHR-to-HyMotion conversion with finger fitting and auto-alignment |
-| **⚡ GGUF Support** | Memory-efficient text encoding with quantized Qwen3 models via ComfyUI-GGUF |
+| **Text-to-Motion** | Generate realistic human animations from natural language descriptions using DiT (Diffusion Transformer) architecture |
+| **Robust Retargeting** | Transfer SMPL-H motions to custom skeletons (Mixamo, DAZ(G3 and G9) UE5, UniRig) with intelligent fuzzy mapping, canonical T-pose support, and geometric fallbacks |
+| **Interactive 3D Viewer** | Three.js preview with transform gizmos (G/R/S keys), resizable viewport, and smooth sub-frame interpolation |
+| **Prompt Enhancement** | AI-powered prompt rewriting with automatic duration estimation using Text2MotionPrompter |
+| **Multiple Export Formats** | Export to FBX (with skeleton & textures) or NPZ (raw SMPL-H data) |
+| **SMPL Integration** | Convert motion capture data (GVHMR/MotionCapture output) to HY-Motion format for retargeting |
+| **MHR GPU Converter** | Ultra-fast GPU-accelerated MHR-to-HyMotion conversion with finger fitting and auto-alignment |
+| **GGUF Support** | Memory-efficient text encoding with quantized Qwen3 models via ComfyUI-GGUF |
 
 ---
 
@@ -51,8 +51,8 @@ Download and place in `ComfyUI/models/hymotion/`:
 
 | Model | Size | Description | Download |
 |-------|------|-------------|----------|
-| **HY-Motion-1.0** | ~4.5GB | Full quality model | [📥 latest.ckpt](https://huggingface.co/Aero-Ex/Hy-Motion1.0/resolve/main/hymotion/HY-Motion-1.0/latest.ckpt) |
-| **HY-Motion-1.0-Lite** | ~1.5GB | Faster, lower VRAM | [📥 latest.ckpt](https://huggingface.co/Aero-Ex/Hy-Motion1.0/resolve/main/hymotion/HY-Motion-1.0-Lite/latest.ckpt) |
+| **HY-Motion-1.0** | ~4.5GB | Full quality model | [latest.ckpt](https://huggingface.co/Aero-Ex/Hy-Motion1.0/resolve/main/hymotion/HY-Motion-1.0/latest.ckpt) |
+| **HY-Motion-1.0-Lite** | ~1.5GB | Faster, lower VRAM | [latest.ckpt](https://huggingface.co/Aero-Ex/Hy-Motion1.0/resolve/main/hymotion/HY-Motion-1.0-Lite/latest.ckpt) |
 
 **Directory structure:**
 ```
@@ -69,9 +69,9 @@ Download and place in `ComfyUI/models/text_encoders/`:
 
 | Encoder | Format | Description | Download |
 |---------|--------|-------------|----------|
-| **CLIP ViT-L/14** | SafeTensors | Visual-text encoder | [📥 clip-vit-large-patch14.safetensors](https://huggingface.co/Aero-Ex/Hy-Motion1.0/resolve/main/text_encoders/clip-vit-large-patch14.safetensors) |
-| **Qwen3-8B** | FP8 | Language model (16GB+ VRAM) | [📥 Qwen3-8B_fp8.safetensors](https://huggingface.co/Aero-Ex/Hy-Motion1.0/resolve/main/text_encoders/Qwen3-8B_fp8.safetensors) |
-| **Qwen3-8B** | GGUF | Quantized (lower VRAM) | [📁 Browse GGUF options](https://huggingface.co/Aero-Ex/Hy-Motion1.0/tree/main/text_encoders/Qwen3-8B-GGUF) |
+| **CLIP ViT-L/14** | SafeTensors | Visual-text encoder | [clip-vit-large-patch14.safetensors](https://huggingface.co/Aero-Ex/Hy-Motion1.0/resolve/main/text_encoders/clip-vit-large-patch14.safetensors) |
+| **Qwen3-8B** | FP8 | Language model (16GB+ VRAM) | [Qwen3-8B_fp8.safetensors](https://huggingface.co/Aero-Ex/Hy-Motion1.0/resolve/main/text_encoders/Qwen3-8B_fp8.safetensors) |
+| **Qwen3-8B** | GGUF | Quantized (lower VRAM) | [Browse GGUF options](https://huggingface.co/Aero-Ex/Hy-Motion1.0/tree/main/text_encoders/Qwen3-8B-GGUF) |
 
 ---
 
@@ -176,4 +176,5 @@ This project is based on the following research and implementations:
 - [SMPL-X](https://github.com/vchoutas/smplx) - Expressive body model.
 
 **ComfyUI implementation by [Aero-Ex](https://github.com/Aero-Ex).**
+
 
