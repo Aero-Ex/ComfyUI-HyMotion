@@ -48,7 +48,7 @@ def fbx_matrix_to_numpy(fbx_mat) -> np.ndarray:
     return mat
 
 
-def matrix_to_quaternion(mat: np.ndarray) -> np.ndarray:
+def _matrix_to_quaternion(mat: np.ndarray) -> np.ndarray:
     """Convert 4x4 or 3x3 matrix to [w, x, y, z] quaternion with normalization."""
     m33 = mat[:3, :3].copy()
     # Orthonormalize basis vectors (rows) to strip scaling/shearing
@@ -63,6 +63,38 @@ def matrix_to_quaternion(mat: np.ndarray) -> np.ndarray:
     rot = R.from_matrix(m33_col)
     q = rot.as_quat()  # [x, y, z, w]
     return np.array([q[3], q[0], q[1], q[2]])
+
+#cursor 自动修正
+def matrix_to_quaternion(mat: np.ndarray) -> np.ndarray:
+    """Convert 4x4 or 3x3 matrix to [w, x, y, z] quaternion with normalization."""
+    m33 = mat[:3, :3].astype(np.float64, copy=True)
+
+    if not np.isfinite(m33).all():
+        return np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+
+    # Strip scale/shear by normalizing row basis vectors (FBX rows).
+    for i in range(3):
+        norm = np.linalg.norm(m33[i])
+        if norm > 1e-9:
+            m33[i] /= norm
+
+    # FBX basis vectors are in rows (Row-Major convention V' = V * M)
+    # SciPy expects basis vectors in columns (Column-Major y = M * x)
+    m = m33.T
+
+    # Robustly project to the nearest proper rotation matrix (det == +1).
+    # This fixes mirrored (left-handed) or slightly non-orthonormal matrices.
+    try:
+        u, _, vh = np.linalg.svd(m)
+        r = u @ vh
+        if np.linalg.det(r) < 0.0:
+            u[:, -1] *= -1.0
+            r = u @ vh
+        rot = R.from_matrix(r)
+        q = rot.as_quat()  # [x, y, z, w]
+        return np.array([q[3], q[0], q[1], q[2]], dtype=np.float64)
+    except Exception:
+        return np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
 
 
 def quaternion_inverse(q: np.ndarray) -> np.ndarray:
@@ -1070,7 +1102,7 @@ def collect_skeleton_nodes(
     node_name = node.GetName()
     attr = node.GetNodeAttribute()
     is_bone = False
-
+    print(f"[HY-Motion] Collecting skeleton nodes: {node_name}")
     # 1. Coordinate Sampling (Bind Pose preferred)
     t_eval = sampling_time if sampling_time is not None else fbx.FbxTime(0)
     node_world_mat = fbx_matrix_to_numpy(node.EvaluateGlobalTransform(t_eval))
