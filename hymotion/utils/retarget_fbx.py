@@ -1180,6 +1180,8 @@ def collect_skeleton_nodes(
         "metatarsal",
         "necklower",
         "neckupper",
+        "bip001",
+        "bip01",
     ]
     if any(k in name_lower for k in keywords):
         is_bone = True
@@ -2440,7 +2442,7 @@ def retarget_animation(
 
         # 1. Root Detection (Based on mapping to 'Pelvis' or keywords)
         if any(x == sb_name for x in ROOT_S) or any(
-            x in t_bone.name.lower() for x in ["hips", "pelvis", "root"]
+            x in t_bone.name.lower() for x in ["hips", "pelvis", "root","bip001","bip01"]
         ):
             if not root_bone_name:
                 root_bone_name = t_bone.name
