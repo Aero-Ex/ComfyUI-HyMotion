@@ -4,6 +4,7 @@ import torch
 import numpy as np
 import folder_paths
 import time
+import uuid
 from server import PromptServer
 from aiohttp import web
 
@@ -20,6 +21,39 @@ try:
     HAS_RETARGET_UTILS = True
 except ImportError:
     HAS_RETARGET_UTILS = False
+
+# Simple in-memory registry for download IDs -> file paths
+_DOWNLOAD_REGISTRY = {}
+_DOWNLOAD_REGISTRY_TTL = 60 * 30  # 30 minutes
+
+def register_download_path(file_path: str) -> str:
+    """
+    Register a file path and return a short download_id.
+    This avoids exposing raw paths to the frontend.
+    """
+    # Normalize path
+    full_path = os.path.abspath(file_path)
+    download_id = uuid.uuid4().hex
+    _DOWNLOAD_REGISTRY[download_id] = {
+        "path": full_path,
+        "time": time.time(),
+    }
+    return download_id
+
+def resolve_download_path(download_id: str) -> str | None:
+    """Resolve a download_id back to a file path, with simple TTL cleanup."""
+    now = time.time()
+    expired = []
+    for k, v in _DOWNLOAD_REGISTRY.items():
+        if now - v.get("time", 0) > _DOWNLOAD_REGISTRY_TTL:
+            expired.append(k)
+    for k in expired:
+        _DOWNLOAD_REGISTRY.pop(k, None)
+
+    info = _DOWNLOAD_REGISTRY.get(download_id)
+    if not info:
+        return None
+    return info.get("path")
 
 # Server route for in-place FBX export
 @PromptServer.instance.routes.post("/hymotion/export_inplace")
@@ -137,6 +171,48 @@ async def export_inplace_fbx(request):
         except ImportError:
             return web.json_response({"error": "FBX SDK not available"}, status=500)
             
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return web.json_response({"error": str(e)}, status=500)
+
+
+@PromptServer.instance.routes.get("/hymotion/download_file/{download_id}")
+async def download_registered_file(request):
+    """
+    Download a previously registered file by its download_id.
+
+    This allows nodes (e.g., JoeDownloadFile) to expose a safe download
+    token to the frontend instead of leaking raw server paths.
+    """
+    try:
+        download_id = request.match_info.get("download_id", "")
+        if not download_id:
+            return web.json_response({"error": "No download_id provided"}, status=400)
+
+        full_path = resolve_download_path(download_id)
+        if not full_path:
+            return web.json_response({"error": "Invalid or expired download_id"}, status=404)
+
+        if not os.path.exists(full_path) or not os.path.isfile(full_path):
+            return web.json_response({"error": f"File not found: {full_path}"}, status=404)
+
+        # Stream file to client
+        filename = os.path.basename(full_path)
+        headers = {
+            "Content-Disposition": f'attachment; filename="{filename}"'
+        }
+
+        # For simplicity, read whole file; for very large files,
+        # this can be turned into a streaming response if needed.
+        with open(full_path, "rb") as f:
+            data = f.read()
+
+        return web.Response(
+            body=data,
+            content_type="application/octet-stream",
+            headers=headers,
+        )
     except Exception as e:
         import traceback
         traceback.print_exc()

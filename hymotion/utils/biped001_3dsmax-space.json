@@ -1,0 +1,160 @@
+{
+    "bones": {
+        "Pelvis": [
+            "Bip001"
+        ],
+        "L_Hip": [
+            "Bip001 L Thigh"
+        ],
+        "L_Knee": [
+            "Bip001 L Calf"
+        ],
+        "L_Ankle": [
+            "Bip001 L Foot"
+        ],
+        "L_Foot": [
+            "Bip001 L Toe0"
+        ],
+        "R_Hip": [
+            "Bip001 R Thigh"
+        ],
+        "R_Knee": [
+            "Bip001 R Calf"
+        ],
+        "R_Ankle": [
+            "Bip001 R Foot"
+        ],
+        "R_Foot": [
+            "Bip001 R Toe0"
+        ],
+        "Spine1": [
+            "Bip001 Spine"
+        ],
+        "Spine2": [
+            "Bip001 Spine1"
+        ],
+        "Spine3": [
+            "Bip001 Spine2"
+        ],
+        "Neck": [
+            "Bip001 Neck"
+        ],
+        "Head": [
+            "Bip001 Head"
+        ],
+        "L_Collar": [
+            "Bip001 L Clavicle"
+        ],
+        "L_Shoulder": [
+            "Bip001 L UpperArm"
+        ],
+        "L_Elbow": [
+            "Bip001 L Forearm"
+        ],
+        "L_Wrist": [
+            "Bip001 L Hand"
+        ],
+        "L_Index1": [
+            "Bip001 L Finger1"
+        ],
+        "L_Index2": [
+            "Bip001 L Finger11"
+        ],
+        "L_Index3": [
+            "Bip001 L Finger12"
+        ],
+        "L_Middle1": [
+            "Bip001 L Finger2"
+        ],
+        "L_Middle2": [
+            "Bip001 L Finger21"
+        ],
+        "L_Middle3": [
+            "Bip001 L Finger22"
+        ],
+        "L_Ring1": [
+            "Bip001 L Finger3"
+        ],
+        "L_Ring2": [
+            "Bip001 L Finger31"
+        ],
+        "L_Ring3": [
+            "Bip001 L Finger32"
+        ],
+        "L_Pinky1": [
+            "Bip001 L Finger4"
+        ],
+        "L_Pinky2": [
+            "Bip001 L Finger41"
+        ],
+        "L_Pinky3": [
+            "Bip001 L Finger42"
+        ],
+        "L_Thumb1": [
+            "Bip001 L Finger0"
+        ],
+        "L_Thumb2": [
+            "Bip001 L Finger01"
+        ],
+        "L_Thumb3": [
+            "Bip001 L Finger02"
+        ],
+        "R_Collar": [
+            "Bip001 R Clavicle"
+        ],
+        "R_Shoulder": [
+            "Bip001 R UpperArm"
+        ],
+        "R_Elbow": [
+            "Bip001 R Forearm"
+        ],
+        "R_Wrist": [
+            "Bip001 R Hand"
+        ],
+        "R_Index1": [
+            "Bip001 R Finger1"
+        ],
+        "R_Index2": [
+            "Bip001 R Finger11"
+        ],
+        "R_Index3": [
+            "Bip001 R Finger12"
+        ],
+        "R_Middle1": [
+            "Bip001 R Finger2"
+        ],
+        "R_Middle2": [
+            "Bip001 R Finger21"
+        ],
+        "R_Middle3": [
+            "Bip001 R Finger22"
+        ],
+        "R_Ring1": [
+            "Bip001 R Finger3"
+        ],
+        "R_Ring2": [
+            "Bip001 R Finger31"
+        ],
+        "R_Ring3": [
+            "Bip001 R Finger32"
+        ],
+        "R_Pinky1": [
+            "Bip001 R Finger4"
+        ],
+        "R_Pinky2": [
+            "Bip001 R Finger41"
+        ],
+        "R_Pinky3": [
+            "Bip001 R Finger42"
+        ],
+        "R_Thumb1": [
+            "Bip001 R Finger0"
+        ],
+        "R_Thumb2": [
+            "Bip001 R Finger01"
+        ],
+        "R_Thumb3": [
+            "Bip001 R Finger02"
+        ]
+    }
+}
