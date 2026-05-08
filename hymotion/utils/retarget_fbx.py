@@ -22,6 +22,7 @@ from .presets import (
     UE5_SOURCE_ALIASES,
     FUZZY_ALIASES,
     BONE_KEYWORDS,
+    ROKOKO_CUSTOM_TO_SMPL,
 )
 
 
@@ -1434,7 +1435,18 @@ def load_bone_mapping(
         print(f"Loading Mapping File: {filepath}")
         with open(filepath, "r") as f:
             data = json.load(f)
-        json_bones = data.get("bones", {})
+        
+        raw_bones = data.get("bones", {})
+        if data.get("rokoko_custom_names"):
+            print("Detected Rokoko/SkinToken mapping format, translating keys...")
+            is_unirig = False  # Disable UniRig BFS hack to allow explicit mapping
+            json_bones = {}
+            for k, v in raw_bones.items():
+                if k in ROKOKO_CUSTOM_TO_SMPL:
+                    smpl_key = ROKOKO_CUSTOM_TO_SMPL[k]
+                    json_bones[smpl_key] = v
+        else:
+            json_bones = raw_bones
     elif is_unirig:
         # Try to find unirig.json in the same directory as this script
         script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -1662,124 +1674,261 @@ def load_bone_mapping(
         # Queue of (src_bone, tgt_bone) pairs to explore children of
         queue = [(src_root, tgt_root)]
 
-        while queue:
-            s_parent, t_parent = queue.pop(0)
+        def run_bfs_matching(bfs_queue):
+            nonlocal match_count
+            while bfs_queue:
+                s_parent, t_parent = bfs_queue.pop(0)
 
-            s_children = src_skel.get_children(s_parent.name)
-            t_children = tgt_skel.get_children(t_parent.name)
+                s_children = src_skel.get_children(s_parent.name)
+                t_children = tgt_skel.get_children(t_parent.name)
 
-            if not s_children or not t_children:
-                continue
-
-            # Filter out fingers if requested
-            s_children = [c for c in s_children if not is_finger(c.name)]
-            t_children = [c for c in t_children if not is_finger(c.name)]
-
-            # Side matching check
-            def get_side(v, name):
-                n = name.lower()
-                if "left" in n or "l_" in n or ".l" in n:
-                    return -1
-                if "right" in n or "r_" in n or ".r" in n:
-                    return 1
-                if abs(v[0]) < 0.05 * (tgt_h if v is t_rel else src_h):
-                    return 0  # Height-relative threshold
-                return 1 if v[0] > 0 else -1
-
-            # Match children of s_parent to children of t_parent
-            for tc in t_children:
-                if tc.name in mapped_targets:
+                if not s_children or not t_children:
                     continue
 
-                best_sc = None
-                best_score = 999999.0
+                # Filter out fingers if requested
+                s_children = [c for c in s_children if not is_finger(c.name)]
+                t_children = [c for c in t_children if not is_finger(c.name)]
 
-                # 1. Try Name-based Hint (Fuzzy)
-                # Check if any source child matches tc's name or its semantic meaning
-                for sc in s_children:
-                    if sc.name.lower() in mapped_sources:
+                # Side matching check
+                def get_side(v, name):
+                    n = name.lower()
+                    if "left" in n or "l_" in n or ".l" in n:
+                        return -1
+                    if "right" in n or "r_" in n or ".r" in n:
+                        return 1
+                    if abs(v[0]) < 0.05 * (tgt_h if v is t_rel else src_h):
+                        return 0  # Height-relative threshold
+                    return 1 if v[0] > 0 else -1
+
+                # Match children of s_parent to children of t_parent
+                for tc in t_children:
+                    if tc.name in mapped_targets:
                         continue
 
-                    # Check if sc name matches tc name (fuzzy)
-                    # Or if sc name matches the gen_name associated with tc in unirig.json
-                    is_match = False
-                    if sc.name.lower() == tc.name.lower():
-                        is_match = True
-                    else:
-                        for gen_name, aliases in json_bones.items():
-                            if (
-                                sc.name.lower() == gen_name.lower()
-                                or sc.name.lower()
-                                in [
-                                    a.lower()
-                                    for a in (
-                                        aliases
-                                        if isinstance(aliases, list)
-                                        else [aliases]
-                                    )
-                                ]
-                            ):
-                                if tc.name in (
-                                    aliases if isinstance(aliases, list) else [aliases]
-                                ):
-                                    is_match = True
-                                    break
+                    best_sc = None
+                    best_score = 999999.0
 
-                    if is_match:
-                        best_sc = sc
-                        best_score = 0.0
-                        break
-
-                # 2. Geometric Fallback
-                if not best_sc:
-                    t_rel = tc.head - t_parent.head
-                    t_side = get_side(t_rel, tc.name)
-
+                    # 1. Try Name-based Hint (Fuzzy)
+                    # Check if any source child matches tc's name or its semantic meaning
                     for sc in s_children:
                         if sc.name.lower() in mapped_sources:
                             continue
 
-                        s_rel = sc.head - s_parent.head
-                        s_side = get_side(s_rel, sc.name)
-                        t_rel_norm = t_rel / tgt_h
-                        s_rel_norm = s_rel / src_h
+                        # Check if sc name matches tc name (fuzzy)
+                        # Or if sc name matches the gen_name associated with tc in unirig.json
+                        is_match = False
+                        if sc.name.lower() == tc.name.lower():
+                            is_match = True
+                        else:
+                            for gen_name, aliases in json_bones.items():
+                                if (
+                                    sc.name.lower() == gen_name.lower()
+                                    or sc.name.lower()
+                                    in [
+                                        a.lower()
+                                        for a in (
+                                            aliases
+                                            if isinstance(aliases, list)
+                                            else [aliases]
+                                        )
+                                    ]
+                                ):
+                                    if tc.name in (
+                                        aliases if isinstance(aliases, list) else [aliases]
+                                    ):
+                                        is_match = True
+                                        break
 
-                        dist = np.linalg.norm(t_rel_norm - s_rel_norm)
-
-                        # Relaxed side matching for limb chains
-                        if t_side != s_side and dist > 0.2:
-                            continue
-
-                        if dist < best_score:
-                            best_score = dist
+                        if is_match:
                             best_sc = sc
+                            best_score = 0.0
+                            break
 
-                # 3. Single-child Fallback: If target has exactly 1 unmatched child and source has 1 unmatched child, force match
-                if (
-                    not best_sc
-                    and len(t_children) == 1
-                    and len(
-                        [c for c in s_children if c.name.lower() not in mapped_sources]
-                    )
-                    == 1
-                ):
-                    remaining_s = [
-                        c for c in s_children if c.name.lower() not in mapped_sources
-                    ][0]
-                    best_sc = remaining_s
-                    best_score = 0.99  # Mark as forced match
+                    # 2. Geometric Fallback
+                    if not best_sc:
+                        t_rel = tc.head - t_parent.head
+                        t_side = get_side(t_rel, tc.name)
 
-                # Increased threshold from 0.5 to 1.0 to allow more matches in limb chains
-                if best_sc and best_score < 1.0:
-                    mapping[best_sc.name.lower()] = tc.name
-                    mapped_targets.add(tc.name)
-                    mapped_sources.add(best_sc.name.lower())
-                    match_count += 1
-                    queue.append((best_sc, tc))
+                        for sc in s_children:
+                            if sc.name.lower() in mapped_sources:
+                                continue
 
+                            s_rel = sc.head - s_parent.head
+                            s_side = get_side(s_rel, sc.name)
+                            t_rel_norm = t_rel / tgt_h
+                            s_rel_norm = s_rel / src_h
+
+                            dist = np.linalg.norm(t_rel_norm - s_rel_norm)
+
+                            # Relaxed side matching for limb chains
+                            if t_side != s_side and dist > 0.2:
+                                continue
+
+                            if dist < best_score:
+                                best_score = dist
+                                best_sc = sc
+
+                    # 3. Single-child Fallback: If target has exactly 1 unmatched child and source has 1 unmatched child, force match
+                    if (
+                        not best_sc
+                        and len(t_children) == 1
+                        and len(
+                            [c for c in s_children if c.name.lower() not in mapped_sources]
+                        )
+                        == 1
+                    ):
+                        remaining_s = [
+                            c for c in s_children if c.name.lower() not in mapped_sources
+                        ][0]
+                        best_sc = remaining_s
+                        best_score = 0.99  # Mark as forced match
+
+                    # Increased threshold from 0.5 to 1.0 to allow more matches in limb chains
+                    if best_sc and best_score < 1.0:
+                        mapping[best_sc.name.lower()] = tc.name
+                        mapped_targets.add(tc.name)
+                        mapped_sources.add(best_sc.name.lower())
+                        match_count += 1
+                        bfs_queue.append((best_sc, tc))
+
+        run_bfs_matching([(src_root, tgt_root)])
         print(
             f"[Retarget] Structural BFS Matching complete. Total matches: {match_count}"
         )
+
+    # Phase 4: Arm Fallback Detection (Now with Topological Wrist Search)
+    for side, side_keys in [("L", ["left", "l_"]), ("R", ["right", "r_"])]:
+        # Check if this side's arm is already mapped
+        side_arm_mapped = any(
+            any(sk in s.lower() for sk in side_keys)
+            and any(ab in s.lower() for ab in ["collar", "shoulder", "elbow", "wrist"])
+            for s in mapped_sources
+        )
+
+        if side_arm_mapped:
+            continue  # Already mapped via BFS
+
+        print(f"[Retarget] Arm Fallback: Searching for {side} arm...")
+        arm_root_mapped = False
+
+        # --- 1. TOPOLOGICAL WRIST SEARCH ---
+        target_wrist = None
+        tgt_pelvis_bone = None
+        for mapped_s, mapped_t in mapping.items():
+            if "pelvis" in mapped_s.lower() or "hips" in mapped_s.lower():
+                t_name = mapped_t[0] if isinstance(mapped_t, list) else mapped_t
+                tgt_pelvis_bone = tgt_skel.get_bone_case_insensitive(t_name)
+                if tgt_pelvis_bone:
+                    break
+        if tgt_pelvis_bone:
+            # Dynamically determine target skeleton's Left/Right X-axis direction
+            target_left_sign = -1  # default: Left is -X
+            for mapped_s, mapped_t in mapping.items():
+                s_low = str(mapped_s).lower()
+                if "hip" in s_low or "upleg" in s_low or "thigh" in s_low:
+                    t_name = mapped_t[0] if isinstance(mapped_t, list) else mapped_t
+                    t_bone = tgt_skel.get_bone_case_insensitive(t_name)
+                    if t_bone:
+                        rel_x = t_bone.head[0] - tgt_pelvis_bone.head[0]
+                        is_left = "l_" in s_low or "left" in s_low
+                        is_right = "r_" in s_low or "right" in s_low
+                        
+                        if is_left:
+                            target_left_sign = 1 if rel_x > 0 else -1
+                            break
+                        elif is_right:
+                            target_left_sign = -1 if rel_x > 0 else 1
+                            break
+
+            expected_side = target_left_sign if side == "L" else -target_left_sign
+            for t_name, t_bone in tgt_skel.bones.items():
+                if t_name in mapped_targets:
+                    continue
+                t_children = tgt_skel.get_children(t_name)
+                # Wrist is highly likely to have 4 or 5 children (fingers)
+                if len(t_children) in [4, 5]:
+                    tgt_rel = (t_bone.head - tgt_pelvis_bone.head) / tgt_h
+                    tgt_side = 1 if tgt_rel[0] > 0.05 else (-1 if tgt_rel[0] < -0.05 else 0)
+                    if tgt_side == expected_side:
+                        # Also check it's far out from the center
+                        if abs(tgt_rel[0]) > 0.15:
+                            target_wrist = t_bone
+                            break
+                            
+        if target_wrist:
+            print(f"[Retarget] Topological Wrist Search found potential {side} wrist: {target_wrist.name}")
+            src_chain = []
+            curr_s = src_skel.get_bone_case_insensitive(f"{side}_Wrist")
+            while curr_s and any(ab in curr_s.name.lower() for ab in ["wrist", "elbow", "shoulder", "collar"]):
+                src_chain.append(curr_s)
+                curr_s = src_skel.get_bone_case_insensitive(curr_s.parent_name)
+            
+            tgt_chain = []
+            curr_t = target_wrist
+            while curr_t and len(tgt_chain) < len(src_chain):
+                tgt_chain.append(curr_t)
+                curr_t = tgt_skel.get_bone_case_insensitive(curr_t.parent_name)
+                
+            # Reverse chains so we map from root to wrist
+            src_chain.reverse()
+            tgt_chain.reverse()
+            
+            for sb, tb in zip(src_chain, tgt_chain):
+                if sb.name.lower() not in mapped_sources and tb.name not in mapped_targets:
+                    mapping[sb.name.lower()] = tb.name
+                    mapped_targets.add(tb.name)
+                    mapped_sources.add(sb.name.lower())
+                    match_count += 1
+            arm_root_mapped = True
+
+        # --- 2. GEOMETRIC FALLBACK (If topological search fails) ---
+        if not arm_root_mapped:
+            for ab in ["collar", "shoulder"]:
+                src_bone = src_skel.get_bone_case_insensitive(f"{side}_{ab.capitalize()}")
+                if not src_bone or src_bone.name.lower() in mapped_sources:
+                    continue
+
+                best_tgt = None
+                best_score = 999999.0
+
+                for t_name, t_bone in tgt_skel.bones.items():
+                    if t_name in mapped_targets:
+                        continue
+
+                    t_lower = t_name.lower()
+                    excluded_names = ["armature", "character", "root", "scene", "skeleton", "rig"]
+                    if any(ex == t_lower or t_lower.startswith(ex + "_") for ex in excluded_names):
+                        continue
+                    
+                    if ab in t_lower and any(sk in t_lower for sk in side_keys):
+                        best_tgt = t_bone
+                        best_score = 0.0
+                        break
+
+                    if src_pelvis and tgt_pelvis_bone:
+                        src_rel = (src_bone.head - src_pelvis.head) / src_h
+                        tgt_rel = (t_bone.head - tgt_pelvis_bone.head) / tgt_h
+
+                        tgt_side = 1 if tgt_rel[0] > 0.05 else (-1 if tgt_rel[0] < -0.05 else 0)
+
+                        if tgt_side != 0 and tgt_side != expected_side:
+                            continue
+
+                        dist = np.linalg.norm(src_rel - tgt_rel)
+                        if dist < best_score:
+                            best_score = dist
+                            best_tgt = t_bone
+
+                if best_tgt and best_score < 1.0:
+                    mapping[src_bone.name.lower()] = best_tgt.name
+                    mapped_targets.add(best_tgt.name)
+                    mapped_sources.add(src_bone.name.lower())
+                    match_count += 1
+                    
+                    print(f"[Retarget] Found {side} arm root via geometry: {src_bone.name} -> {best_tgt.name}. Tracing structure...")
+                    run_bfs_matching([(src_bone, best_tgt)])
+                    break
+
 
     # Phase 3: Hand and Finger Mapping (Phase 2 of the plan)
     # Identify mapped wrists and explore their children
@@ -1906,114 +2055,6 @@ def load_bone_mapping(
                         match_count += 1
                         s_curr, t_curr = s_next[0], t_next[0]
 
-    # Phase 4: Arm Fallback Detection
-    # If arms were not mapped via structural BFS, try to find them using alternative strategies
-    arm_bones = ["collar", "shoulder", "elbow", "wrist"]
-    for side, side_keys in [("L", ["left", "l_"]), ("R", ["right", "r_"])]:
-        # Check if this side's arm is already mapped
-        side_arm_mapped = any(
-            any(sk in s.lower() for sk in side_keys)
-            and any(ab in s.lower() for ab in arm_bones)
-            for s in mapped_sources
-        )
-
-        if side_arm_mapped:
-            continue  # Already mapped via BFS
-
-        print(f"[Retarget] Arm Fallback: Searching for {side} arm...")
-
-        # Find source arm chain
-        src_collar = src_skel.get_bone_case_insensitive(f"{side}_Collar")
-        if not src_collar:
-            continue
-
-        # Strategy 1: Find target bones by name hints
-        for ab in arm_bones:
-            src_bone = src_skel.get_bone_case_insensitive(f"{side}_{ab.capitalize()}")
-            if not src_bone or src_bone.name.lower() in mapped_sources:
-                continue
-
-            # Find unmapped target bone with similar name or position
-            best_tgt = None
-            best_score = 999999.0
-
-            for t_name, t_bone in tgt_skel.bones.items():
-                if t_name in mapped_targets:
-                    continue
-
-                # Skip non-skeleton nodes (root containers, meshes, etc.)
-                t_lower = t_name.lower()
-                excluded_names = [
-                    "armature",
-                    "character",
-                    "root",
-                    "scene",
-                    "skeleton",
-                    "rig",
-                ]
-                if any(
-                    ex == t_lower or t_lower.startswith(ex + "_")
-                    for ex in excluded_names
-                ):
-                    continue
-                t_lower = t_name.lower()
-                if ab in t_lower:
-                    # Check side
-                    if any(sk in t_lower for sk in side_keys):
-                        best_tgt = t_bone
-                        best_score = 0.0
-                        break
-
-                # Geometric fallback: find bone with similar relative position
-                # Use position relative to a common reference (pelvis)
-                src_pelvis = src_skel.get_bone_case_insensitive("Pelvis")
-                tgt_pelvis_bone = None
-                for mapped_s, mapped_t in mapping.items():
-                    if "pelvis" in mapped_s.lower():
-                        if isinstance(mapped_t, list):
-                            for t_name in mapped_t:
-                                tgt_pelvis_bone = tgt_skel.get_bone_case_insensitive(
-                                    t_name
-                                )
-                                if tgt_pelvis_bone:
-                                    break
-                        else:
-                            tgt_pelvis_bone = tgt_skel.get_bone_case_insensitive(
-                                mapped_t
-                            )
-                        if tgt_pelvis_bone:
-                            break
-
-                if src_pelvis and tgt_pelvis_bone:
-                    src_rel = (src_bone.head - src_pelvis.head) / src_h
-                    tgt_rel = (t_bone.head - tgt_pelvis_bone.head) / tgt_h
-
-                    # Check side consistency
-                    src_side = (
-                        1 if src_rel[0] > 0.05 else (-1 if src_rel[0] < -0.05 else 0)
-                    )
-                    tgt_side = (
-                        1 if tgt_rel[0] > 0.05 else (-1 if tgt_rel[0] < -0.05 else 0)
-                    )
-
-                    if src_side != tgt_side:
-                        continue
-
-                    dist = np.linalg.norm(src_rel - tgt_rel)
-                    if dist < best_score:
-                        best_score = dist
-                        best_tgt = t_bone
-
-            if best_tgt and best_score < 1.0:
-                if (
-                    src_bone.name.lower() not in mapped_sources
-                    and best_tgt.name not in mapped_targets
-                ):
-                    mapping[src_bone.name.lower()] = best_tgt.name
-                    mapped_targets.add(best_tgt.name)
-                    mapped_sources.add(src_bone.name.lower())
-                    match_count += 1
-
     print(f"[Retarget] Final load_bone_mapping: Found {match_count} total matches.")
     return mapping
 
@@ -2128,8 +2169,7 @@ def apply_retargeted_animation(
                 t.SetFrame(f - fstart, tmode)  # Normalize to start at 0
                 for i, c in enumerate([tx, ty, tz]):
                     idx = c.KeyAdd(t)[0]
-                    # Desired translation = target_relative_pos - intrinsic_fbx_offset
-                    val = loc[i] - intrinsic_offset[i]
+                    val = loc[i]
                     c.KeySetValue(idx, float(val))
                     c.KeySetInterpolation(
                         idx, fbx.FbxAnimCurveDef.EInterpolationType.eInterpolationLinear
@@ -2158,7 +2198,8 @@ def retarget_animation(
     preserve_position: bool = False,
     auto_stride: bool = False,
     smart_arm_align: bool = False,
-):
+    center_at_origin: bool = False,
+) -> tuple[dict, dict, list]:
     print("Retargeting Animation...")
 
     is_ue5 = mapping.get("__preset__") == "ue5"
@@ -2426,12 +2467,12 @@ def retarget_animation(
     s_root_bone = None
 
     # SMPL-H / HyMotion Reference Bone Names
-    ROOT_S = ["pelvis"]
-    LHIP_S = ["l_hip", "leftupleg"]
-    RHIP_S = ["r_hip", "rightupleg"]
-    SPINE_S = ["spine3", "spine2", "spine"]
-    LFOOT_S = ["l_ankle", "leftfoot", "l_foot"]
-    RFOOT_S = ["r_ankle", "rightfoot", "r_foot"]
+    ROOT_S = ["pelvis", "hips"]
+    LHIP_S = ["l_hip", "left_hip", "leftupleg", "left_up_leg", "l_thigh", "left_thigh"]
+    RHIP_S = ["r_hip", "right_hip", "rightupleg", "right_up_leg", "r_thigh", "right_thigh"]
+    SPINE_S = ["spine3", "spine2", "spine1", "spine"]
+    LFOOT_S = ["l_ankle", "left_ankle", "leftfoot", "left_foot", "l_foot"]
+    RFOOT_S = ["r_ankle", "right_ankle", "rightfoot", "right_foot", "r_foot"]
 
     for s_bone, t_bone_val, _ in active:
         t_bone = t_bone_val[0] if isinstance(t_bone_val, list) else t_bone_val
@@ -2907,27 +2948,51 @@ def retarget_animation(
             s_hip_f0_tgt = global_pos_q.apply(s_pos_0 * scale)
 
             # CORRECT INITIAL POSITION:
-            # Use the TARGET'S rest hip position as anchor.
-            # The source's vertical movement (delta from frame 0) is applied ON TOP
-            # of the target's rest position, so the character maintains its native height.
+            # If center_at_origin is True, we move the target character's core to [0,0,0] (grounded).
+            # Otherwise, we use the TARGET'S rest hip position as the anchor.
             initial_pos = t_rest_pos.copy()
 
-            # Horizontal centering: center based on feet centroid at frame 0
-            foot_pos_0 = []
-            for sf in [cur_s_lfoot, cur_s_rfoot]:
-                if sf:
-                    p = sf.world_location_animation.get(frames[0], sf.head)
-                    foot_pos_0.append(global_pos_q.apply(p * scale))
+            # Target floor: minimum foot Y/Z in rest pose
+            # (Calculated above as t_floor)
 
-            if foot_pos_0:
-                s_center_0 = np.mean(foot_pos_0, axis=0)
+            if center_at_origin:
+                # Calculate target's horizontal center based on feet in rest pose
+                t_foot_centers = []
+                if cur_t_lfoot:
+                    t_foot_centers.append(cur_t_lfoot.head)
+                if cur_t_rfoot:
+                    t_foot_centers.append(cur_t_rfoot.head)
+                
+                if t_foot_centers:
+                    t_center_rest = np.mean(t_foot_centers, axis=0)
+                else:
+                    t_center_rest = t_rest_pos.copy()
+
+                # Zero out horizontal components, ground the vertical component
+                for i in range(3):
+                    if i == t_up_axis_idx:
+                        # Grounding: Shift pelvis so feet touch 0
+                        initial_pos[i] = t_rest_pos[i] - t_floor + s_floor_f0_tgt
+                    else:
+                        # Centering: Shift pelvis so feet center is at 0
+                        initial_pos[i] = t_rest_pos[i] - t_center_rest[i]
             else:
-                s_center_0 = s_hip_f0_tgt
+                # Horizontal centering: center based on feet centroid at frame 0 (Legacy behavior)
+                foot_pos_0 = []
+                for sf in [cur_s_lfoot, cur_s_rfoot]:
+                    if sf:
+                        p = sf.world_location_animation.get(frames[0], sf.head)
+                        foot_pos_0.append(global_pos_q.apply(p * scale))
 
-            # Keep horizontal at target rest position
-            for i in range(3):
-                if i != t_up_axis_idx:
-                    initial_pos[i] = t_rest_pos[i] + (s_hip_f0_tgt[i] - s_center_0[i])
+                if foot_pos_0:
+                    s_center_0 = np.mean(foot_pos_0, axis=0)
+                else:
+                    s_center_0 = s_hip_f0_tgt
+
+                # Keep horizontal at target rest position
+                for i in range(3):
+                    if i != t_up_axis_idx:
+                        initial_pos[i] = t_rest_pos[i] + (s_hip_f0_tgt[i] - s_center_0[i])
 
             print(f"[Retarget] Target rest hip pos: {t_rest_pos.round(2)}")
             print(f"[Retarget] Initial hip pos: {initial_pos.round(2)}")
@@ -2985,7 +3050,15 @@ def retarget_animation(
                         [p_rest_q[1], p_rest_q[2], p_rest_q[3], p_rest_q[0]]
                     )
 
-                local_pos_f = p_rot_r.inv().apply(t_pos_f - p_world_mat[3, :3])
+                # Extract parent global scale to prevent double-scaling the root translation
+                p_scale = np.array([
+                    np.linalg.norm(p_world_mat[0, :3]),
+                    np.linalg.norm(p_world_mat[1, :3]),
+                    np.linalg.norm(p_world_mat[2, :3])
+                ])
+                p_scale[p_scale < 1e-6] = 1.0  # Prevent division by zero
+                
+                local_pos_f = p_rot_r.inv().apply(t_pos_f - p_world_mat[3, :3]) / p_scale
 
                 ret_locs[t_bone_main.name][f] = local_pos_f
 
@@ -3341,6 +3414,9 @@ def main():
         action="store_false",
         help="Force disable rig normalization.",
     )
+    parser.add_argument(
+        "--center", action="store_true", help="Center the character at origin [0,0,0] (grounded)."
+    )
     parser.set_defaults(neutral=True)
     args = parser.parse_args()
 
@@ -3385,6 +3461,7 @@ def main():
         in_place=args.in_place,
         auto_stride=args.auto_stride,
         smart_arm_align=args.smart_arm_align,
+        center_at_origin=args.center,
     )
 
     print(f"\n[Retarget] Bone Mapping Results:\n  Total: {len(active)} bones mapped")

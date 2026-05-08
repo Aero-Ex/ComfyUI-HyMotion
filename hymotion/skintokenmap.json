@@ -1,0 +1,114 @@
+{
+    "rokoko_custom_names": true,
+    "version": 1,
+    "bones": {
+        "leftUpperArm": [
+            "mixamorig:leftarm"
+        ],
+        "custom_bone_lefthandindex4": [
+            "lefthandindex4",
+            "mixamorig:lefthandindex4"
+        ],
+        "custom_bone_lefthandmiddle4": [
+            "lefthandmiddle4",
+            "mixamorig:lefthandmiddle4"
+        ],
+        "custom_bone_lefthandring4": [
+            "lefthandring4",
+            "mixamorig:lefthandring4"
+        ],
+        "custom_bone_lefthandpinky4": [
+            "lefthandpinky4",
+            "mixamorig:lefthandpinky4"
+        ],
+        "rightUpperArm": [
+            "mixamorig:rightarm"
+        ],
+        "custom_bone_righthandindex4": [
+            "righthandindex4",
+            "mixamorig:righthandindex4"
+        ],
+        "custom_bone_righthandmiddle4": [
+            "righthandmiddle4",
+            "mixamorig:righthandmiddle4"
+        ],
+        "custom_bone_righthandring4": [
+            "righthandring4",
+            "mixamorig:righthandring4"
+        ],
+        "custom_bone_righthandpinky4": [
+            "righthandpinky4",
+            "mixamorig:righthandpinky4"
+        ],
+        "hip": [
+            "bone_0"
+        ],
+        "leftUpLeg": [
+            "bone_44"
+        ],
+        "leftLeg": [
+            "bone_45"
+        ],
+        "leftFoot": [
+            "bone_46"
+        ],
+        "custom_bone_l_foot": [
+            "l_foot",
+            "bone_47"
+        ],
+        "rightUpLeg": [
+            "bone_48"
+        ],
+        "rightLeg": [
+            "bone_49"
+        ],
+        "rightFoot": [
+            "bone_50"
+        ],
+        "custom_bone_r_foot": [
+            "r_foot",
+            "bone_51"
+        ],
+        "custom_bone_spine1": [
+            "spine1",
+            "bone_1"
+        ],
+        "custom_bone_spine2": [
+            "spine2",
+            "bone_2"
+        ],
+        "neck": [
+            "bone_3"
+        ],
+        "head": [
+            "bone_4"
+        ],
+        "leftShoulder": [
+            "bone_6"
+        ],
+        "custom_bone_l_shoulder": [
+            "l_shoulder",
+            "bone_7"
+        ],
+        "leftLowerArm": [
+            "bone_8"
+        ],
+        "leftHand": [
+            "bone_9"
+        ],
+        "rightShoulder": [
+            "bone_25"
+        ],
+        "custom_bone_r_shoulder": [
+            "r_shoulder",
+            "bone_26"
+        ],
+        "rightLowerArm": [
+            "bone_27"
+        ],
+        "rightHand": [
+            "bone_28"
+        ]
+    },
+    "shapes": {}
+}
